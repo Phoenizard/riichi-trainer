@@ -1,0 +1,5 @@
+mahjong>=1.4.0
+requests>=2.28.0
+
+# Optional: only needed for local model inference (not needed for MJAPI online mode)
+# torch>=2.0.0
