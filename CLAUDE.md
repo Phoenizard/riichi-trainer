@@ -41,8 +41,8 @@ When you encounter decisions that need architecture input or external research (
    **Path A (RECOMMENDED): Compile libriichi**
    ```bash
    # Requires Rust toolchain
-   git clone https://github.com/Equim-chan/Mortal.git /tmp/Mortal
-   cd /tmp/Mortal
+   # Mortal source already cloned at tmp/Mortal/ (DO NOT use /tmp/Mortal)
+   cd tmp/Mortal
    cargo build -p libriichi --lib --release
    # macOS: cp target/release/libriichi.dylib <project>/libriichi.so
    # Linux: cp target/release/libriichi.so <project>/libriichi.so

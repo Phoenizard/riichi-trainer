@@ -1,0 +1,36 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Model weights (large binary files)
+model/*.pth
+
+# Compiled libraries
+*.so
+*.dylib
+*.pyd
+
+# Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+*.env
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
+
+# tmp files
+tmp/
