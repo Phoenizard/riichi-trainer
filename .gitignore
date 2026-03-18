@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 
+logs/
+
 # Model weights (large binary files)
 model/*.pth
 
