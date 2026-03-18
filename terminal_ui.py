@@ -17,6 +17,18 @@ from game.tiles import (
 )
 from ai.mock_agent import MockAgent
 
+# Try to load MortalAgent for AI opponents
+_USE_MORTAL = False
+_MODEL_PATH = "model/model_v4_20240308_best_min.pth"
+try:
+    import os
+    if os.path.exists(_MODEL_PATH):
+        from ai.mortal_agent import MortalAgent
+        import libriichi  # noqa: F401
+        _USE_MORTAL = True
+except ImportError:
+    pass
+
 
 # ---------------------------------------------------------------------------
 # Display helpers
@@ -124,9 +136,13 @@ class HumanAgent:
         print_hand(ps)
 
         # Group actions by type
+        skip_action = next((a for a in available_actions if a.type == ActionType.SKIP), None)
         special_actions = [a for a in available_actions
                           if a.type not in (ActionType.DISCARD, ActionType.SKIP)]
         discard_actions = [a for a in available_actions if a.type == ActionType.DISCARD]
+        # Always show skip as the last special action when there are call options
+        if skip_action and special_actions:
+            special_actions.append(skip_action)
 
         # Show special actions first
         if special_actions:
@@ -216,6 +232,7 @@ class HumanAgent:
 
     def on_event(self, event: dict) -> None:
         """Show game events to the player."""
+        import time
         etype = event.get("type", "")
         player = event.get("player", -1)
 
@@ -229,7 +246,15 @@ class HumanAgent:
 
         elif etype in ("chi", "pon", "kan") and player != 0:
             name = SEAT_NAMES[player] if 0 <= player < 4 else f"Player {player}"
-            print(f"  {name} → {etype.upper()}!")
+            call_name = {"chi": "チー(吃)", "pon": "ポン(碰)", "kan": "カン(杠)"}.get(etype, etype)
+            tile = event.get("tile", "")
+            print(f"  {name} → {call_name} {tile_to_display(tile)}")
+            time.sleep(1)
+
+        elif etype == "reach" and player != 0:
+            name = SEAT_NAMES[player] if 0 <= player < 4 else f"Player {player}"
+            print(f"  {name} → リーチ(立直)!")
+            time.sleep(1)
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +299,15 @@ def run_game():
     input("Enterでゲーム開始...")
 
     human = HumanAgent()
-    agents = [human, MockAgent("AI-1"), MockAgent("AI-2"), MockAgent("AI-3")]
+    if _USE_MORTAL:
+        print("AI: Mortal v4 (local)")
+        agents = [human,
+                  MortalAgent.create_libriichi(1, _MODEL_PATH),
+                  MortalAgent.create_libriichi(2, _MODEL_PATH),
+                  MortalAgent.create_libriichi(3, _MODEL_PATH)]
+    else:
+        print("AI: MockAgent (heuristic)")
+        agents = [human, MockAgent("AI-1"), MockAgent("AI-2"), MockAgent("AI-3")]
 
     engine = GameEngine(agents)
 

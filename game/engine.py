@@ -281,12 +281,14 @@ class GameEngine:
                 self._handle_kan(state, player_id, action)
                 continue  # kan draws replacement tile, same player continues
 
-            if action.type == ActionType.RIICHI:
+            is_riichi_action = action.type == ActionType.RIICHI
+            if is_riichi_action:
                 state.players[player_id].is_riichi = True
                 state.players[player_id].is_ippatsu = True
                 state.players[player_id].riichi_turn = len(state.players[player_id].discards)
                 self.game_scores[player_id] -= 1000
                 self.riichi_sticks += 1
+                self._log_event({"type": "reach", "player": player_id})
 
             # 4. Discard
             discard_tile = action.tile
@@ -298,6 +300,10 @@ class GameEngine:
             if call_action and call_action.type == ActionType.RON:
                 self._handle_ron(state, call_action.player, player_id, discard_tile)
                 break
+
+            # Riichi accepted (discard wasn't ron'd)
+            if is_riichi_action:
+                self._log_event({"type": "reach_accepted", "player": player_id})
 
             if call_action and call_action.type in (ActionType.CHI, ActionType.PON, ActionType.KAN):
                 self._handle_call(state, call_action)
@@ -335,6 +341,9 @@ class GameEngine:
                 if p.is_ippatsu and p.is_riichi:
                     # Ippatsu expires after one full turn cycle
                     p.is_ippatsu = False
+
+        # Emit end_kyoku for mjai protocol
+        self._log_event({"type": "end_kyoku"})
 
         # Apply score changes
         for i in range(4):
@@ -532,13 +541,15 @@ class GameEngine:
             if self._can_ron(state, pid, tile):
                 ron_actions.append(Action(ActionType.RON, pid, tile=tile))
 
-            # Check pon
-            if self._can_pon(ps, tile):
+            # Check pon (not allowed in riichi)
+            if not ps.is_riichi and self._can_pon(ps, tile):
                 pon_actions.append(Action(ActionType.PON, pid, tile=tile))
 
-            # Check chi (only from left player)
-            if pid == (discarder + 1) % 4:
+            # Check chi (only from left player / shimocha, not allowed in riichi)
+            if not ps.is_riichi and pid == (discarder + 1) % 4:
                 chi_opts = self._get_chi_options(ps, tile)
+                for opt in chi_opts:
+                    opt.player = pid
                 chi_actions.extend(chi_opts)
 
         # Priority resolution
@@ -607,7 +618,15 @@ class GameEngine:
             ps.melds.append(meld)
 
         ps.hand = sort_tiles(ps.hand)
-        self._log_event({"type": action.type.value, "player": pid, "tile": tile})
+        # Log call event with consumed tiles for mjai compatibility
+        # consumed = tiles from the caller's hand (all meld tiles except the called one)
+        consumed = list(meld.tiles)
+        try:
+            consumed.remove(tile)  # remove only the first occurrence of the called tile
+        except ValueError:
+            pass
+        self._log_event({"type": action.type.value, "player": pid, "tile": tile,
+                         "target": discarder, "consumed": consumed})
 
     def _handle_kan(self, state: RoundState, player_id: int, action: Action):
         """Handle kan declaration."""
@@ -627,6 +646,8 @@ class GameEngine:
                     ps.draw_tile = None
             meld = Meld(MeldType.ANKAN, matching[:4])
             ps.melds.append(meld)
+            self._log_event({"type": "kan", "player": player_id, "tile": tile,
+                             "target": player_id, "consumed": matching[:4]})
         else:
             # Kakan (add to existing pon)
             for m in ps.melds:
@@ -637,17 +658,24 @@ class GameEngine:
                         ps.draw_tile = None
                     m.tiles.append(tile)
                     m.type = MeldType.KAKAN
+                    self._log_event({"type": "kan", "player": player_id, "tile": tile,
+                                     "target": player_id, "consumed": list(m.tiles[:3])})
                     break
 
-        # New dora indicator
-        state.kan_count += 1
-        if state.kan_count <= 4 and len(state.dead_wall) > 4 + state.kan_count:
-            state.dora_indicators.append(state.dead_wall[4 + state.kan_count * 2 - 2])
-
-        # Draw replacement from dead wall
+        # Draw replacement from dead wall (take from front)
         if state.dead_wall:
             replacement = state.dead_wall.pop(0)
             ps.draw_tile = replacement
+
+        # New dora indicator
+        # Dead wall layout: [r0..r3, d1, u1, d2, u2, d3, u3, d4, u4]
+        # After n pops, original index (4 + n*2) becomes (4 + n*2 - n) = (4 + n)
+        state.kan_count += 1
+        dora_idx = 4 + state.kan_count  # adjusted for pops: 5, 6, 7, 8
+        if state.kan_count <= 4 and dora_idx < len(state.dead_wall):
+            new_indicator = state.dead_wall[dora_idx]
+            state.dora_indicators.append(new_indicator)
+            self._log_event({"type": "dora", "dora_marker": new_indicator})
 
         ps.hand = sort_tiles(ps.hand)
 
@@ -672,6 +700,7 @@ class GameEngine:
     def _handle_exhaustive_draw(self, state: RoundState):
         """Handle exhaustive draw (ryuukyoku)."""
         state.result = RoundResult.DRAW_NORMAL
+        self._log_event({"type": "ryukyoku"})
         # Tenpai payments
         tenpai = [self._is_tenpai(state, i) for i in range(4)]
         tenpai_count = sum(tenpai)
@@ -961,9 +990,11 @@ class GameEngine:
             "round_wind": state.round_wind,
             "round_number": state.round_number,
             "honba": state.honba,
+            "riichi_sticks": self.riichi_sticks,
             "dealer": state.dealer,
             "dora_indicators": state.dora_indicators,
             "scores": state.scores,
+            "tehais": [list(p.hand) for p in state.players],
         }
         self._log_event(event)
 

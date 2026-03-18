@@ -1,7 +1,10 @@
 """
-Mortal AI Agent — Dual mode: MJAPI (online) / Docker (local)
+Mortal AI Agent — Triple mode: libriichi (local) / MJAPI (online) / Docker (local)
 
 Usage:
+  # Local libriichi mode (recommended)
+  agent = MortalAgent.create_libriichi(player_id=0, model_path="model/model.pth")
+
   # Online mode (MJAPI)
   agent = MortalAgent.create_mjapi(player_id=0, api_url="https://mjai.xxx.org")
 
@@ -28,6 +31,22 @@ from game.engine import Action, ActionType, RoundState, PlayerState
 from game.tiles import normalize, sort_tiles
 
 logger = logging.getLogger(__name__)
+
+# Red five translation: our internal "0m" ↔ mjai "5mr"
+_TO_MJAI = {"0m": "5mr", "0p": "5pr", "0s": "5sr"}
+_FROM_MJAI = {"5mr": "0m", "5pr": "0p", "5sr": "0s"}
+
+def _tile_to_mjai(tile: str) -> str:
+    return _TO_MJAI.get(tile, tile)
+
+def _tile_from_mjai(tile: str) -> str:
+    return _FROM_MJAI.get(tile, tile)
+
+def _tiles_to_mjai(tiles: list[str]) -> list[str]:
+    return [_tile_to_mjai(t) for t in tiles]
+
+def _tiles_from_mjai(tiles: list[str]) -> list[str]:
+    return [_tile_from_mjai(t) for t in tiles]
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +89,7 @@ def parse_mortal_meta(reaction: dict) -> MortalAnalysis:
     """Parse Mortal's reaction with meta into MortalAnalysis."""
     analysis = MortalAnalysis()
     analysis.recommended_action = reaction.get("type", "")
-    analysis.recommended_tile = reaction.get("pai", "")
+    analysis.recommended_tile = _tile_from_mjai(reaction.get("pai", ""))
 
     meta = reaction.get("meta", {})
     if not meta:
@@ -212,6 +231,31 @@ class MjapiClient:
 
 
 # ---------------------------------------------------------------------------
+# Local libriichi Client (recommended local mode)
+# ---------------------------------------------------------------------------
+
+class LocalLibrichiClient:
+    """Run Mortal inference locally via compiled libriichi + PyTorch model."""
+
+    def __init__(self, model_path: str, player_id: int):
+        import libriichi
+        from ai.mortal_engine import get_engine
+
+        self.player_id = player_id
+        self._engine = get_engine(model_path)
+        self.bot = libriichi.mjai.Bot(self._engine, player_id)
+        logger.info(f"Local Mortal loaded for player {player_id} "
+                    f"(version={self._engine.version}, device={self._engine.device})")
+
+    def react(self, mjai_event: dict) -> Optional[dict]:
+        """Feed mjai event to bot, return reaction or None."""
+        result = self.bot.react(json.dumps(mjai_event))
+        if result:
+            return json.loads(result)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Docker Client (local mode)
 # ---------------------------------------------------------------------------
 
@@ -271,17 +315,19 @@ class DockerMortalClient:
 class MortalAgent:
     """Unified Mortal AI agent for our game engine.
 
-    Supports two backends:
+    Supports three backends:
+      - "local": Local libriichi + PyTorch (recommended)
       - "mjapi": Online MJAPI service
       - "docker": Local Docker container
     """
 
-    def __init__(self, player_id: int, mode: str = "mjapi"):
+    def __init__(self, player_id: int, mode: str = "local"):
         self.player_id = player_id
         self.mode = mode
         self.name = f"Mortal-{player_id}"
 
         # Backend clients
+        self._local: Optional[LocalLibrichiClient] = None
         self._mjapi: Optional[MjapiClient] = None
         self._docker: Optional[DockerMortalClient] = None
 
@@ -289,8 +335,16 @@ class MortalAgent:
         self._event_buffer: list[dict] = []
         self._last_analysis: Optional[MortalAnalysis] = None
         self._model_name: str = "baseline"
+        self._game_started: bool = False
 
     # --- Factory methods ---
+
+    @classmethod
+    def create_libriichi(cls, player_id: int, model_path: str) -> "MortalAgent":
+        """Create agent using local libriichi + PyTorch model."""
+        agent = cls(player_id, mode="local")
+        agent._local = LocalLibrichiClient(model_path, player_id)
+        return agent
 
     @classmethod
     def create_mjapi(cls, player_id: int, api_url: str,
@@ -328,7 +382,9 @@ class MortalAgent:
 
     def end_game(self):
         """Cleanup after game ends."""
-        if self.mode == "mjapi" and self._mjapi:
+        if self.mode == "local":
+            pass  # No cleanup needed for libriichi
+        elif self.mode == "mjapi" and self._mjapi:
             self._mjapi.stop_bot()
         elif self.mode == "docker" and self._docker:
             self._docker.stop()
@@ -356,6 +412,11 @@ class MortalAgent:
 
     def on_event(self, event: dict) -> None:
         """Receive game event from engine — forward to Mortal."""
+        # Auto-send start_game before first round
+        if not self._game_started and event.get("type") == "start_round":
+            self._game_started = True
+            self._send_event({"type": "start_game", "names": ["P0", "P1", "P2", "P3"]})
+
         # Translate engine event to mjai format and send
         mjai_event = self._engine_event_to_mjai(event)
         if mjai_event:
@@ -371,7 +432,9 @@ class MortalAgent:
 
     def _send_event(self, mjai_event: dict) -> Optional[dict]:
         """Send mjai event to the appropriate backend."""
-        if self.mode == "mjapi" and self._mjapi:
+        if self.mode == "local" and self._local:
+            return self._local.react(mjai_event)
+        elif self.mode == "mjapi" and self._mjapi:
             return self._mjapi.act(mjai_event)
         elif self.mode == "docker" and self._docker:
             return self._docker.send_and_receive(mjai_event)
@@ -384,14 +447,30 @@ class MortalAgent:
         etype = event.get("type", "")
 
         if etype == "start_round":
-            # This needs the full start_kyoku event, built by the engine
-            return None  # Handled separately via start_round()
+            tehais = []
+            for i in range(4):
+                if i == self.player_id:
+                    tehais.append(_tiles_to_mjai(event["tehais"][i]))
+                else:
+                    tehais.append(["?"] * 13)
+            return {
+                "type": "start_kyoku",
+                "bakaze": event["round_wind"],
+                "kyoku": event["round_number"] + 1,
+                "honba": event["honba"],
+                "kyotaku": event.get("riichi_sticks", 0),
+                "oya": event["dealer"],
+                "dora_marker": _tile_to_mjai(event["dora_indicators"][0])
+                    if event.get("dora_indicators") else "",
+                "scores": event["scores"],
+                "tehais": tehais,
+            }
 
         if etype == "draw":
             player = event["player"]
             tile = event["tile"]
             if player == self.player_id:
-                return {"type": "tsumo", "actor": player, "pai": tile}
+                return {"type": "tsumo", "actor": player, "pai": _tile_to_mjai(tile)}
             else:
                 return {"type": "tsumo", "actor": player, "pai": "?"}
 
@@ -399,17 +478,67 @@ class MortalAgent:
             return {
                 "type": "dahai",
                 "actor": event["player"],
-                "pai": event["tile"],
+                "pai": _tile_to_mjai(event["tile"]),
                 "tsumogiri": event.get("tsumogiri", False),
             }
 
-        if etype in ("chi", "pon", "kan"):
-            return event  # Already close to mjai format
+        if etype in ("chi", "pon"):
+            return {
+                "type": etype,
+                "actor": event["player"],
+                "target": event.get("target", 0),
+                "pai": _tile_to_mjai(event.get("tile", "")),
+                "consumed": _tiles_to_mjai(event.get("consumed", [])),
+            }
+
+        if etype == "kan":
+            consumed = event.get("consumed", [])
+            target = event.get("target", event["player"])
+            actor = event["player"]
+            if target == actor and len(consumed) >= 4:
+                # Ankan: consumed has all 4 tiles, no pai/target
+                return {
+                    "type": "ankan",
+                    "actor": actor,
+                    "consumed": _tiles_to_mjai(consumed[:4]),
+                }
+            elif target == actor:
+                # Kakan: pai is the added tile, consumed is 3 tiles from pon
+                return {
+                    "type": "kakan",
+                    "actor": actor,
+                    "pai": _tile_to_mjai(event.get("tile", "")),
+                    "consumed": _tiles_to_mjai(consumed[:3]),
+                }
+            else:
+                # Daiminkan
+                return {
+                    "type": "daiminkan",
+                    "actor": actor,
+                    "target": target,
+                    "pai": _tile_to_mjai(event.get("tile", "")),
+                    "consumed": _tiles_to_mjai(consumed[:3]),
+                }
+
+        if etype == "dora":
+            return {"type": "dora", "dora_marker": _tile_to_mjai(event["dora_marker"])}
+
+        if etype == "reach":
+            return {"type": "reach", "actor": event["player"]}
+
+        if etype == "reach_accepted":
+            return {"type": "reach_accepted", "actor": event["player"]}
 
         if etype in ("tsumo", "ron"):
             return {"type": "hora", "actor": event["player"],
                     "target": event.get("from", event["player"]),
-                    "pai": event.get("tile", "")}
+                    "pai": _tile_to_mjai(event.get("tile", ""))}
+
+        if etype == "ryukyoku":
+            return {"type": "ryukyoku"}
+
+        if etype == "end_kyoku":
+            return {"type": "end_kyoku"}
 
         return None
 
@@ -419,14 +548,15 @@ class MortalAgent:
         tehais = []
         for i in range(4):
             if i == self.player_id:
-                tehais.append(list(state.players[i].hand))
+                tehais.append(_tiles_to_mjai(list(state.players[i].hand)))
             else:
                 tehais.append(["?"] * 13)
 
         event = {
             "type": "start_kyoku",
             "bakaze": state.round_wind,
-            "dora_marker": state.dora_indicators[0] if state.dora_indicators else "",
+            "dora_marker": _tile_to_mjai(
+                state.dora_indicators[0] if state.dora_indicators else ""),
             "kyoku": state.round_number + 1,
             "honba": state.honba,
             "kyotaku": state.riichi_sticks,
