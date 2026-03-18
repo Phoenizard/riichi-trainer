@@ -136,33 +136,72 @@ def tiles_to_136(tiles: list[str]) -> list[int]:
     """Convert tile strings to 136-format indices (for mahjong library).
 
     The mahjong library uses 136-tile indices where each tile face has 4 indices.
-    Red fives use specific indices (16 for 0m, 52 for 0p, 88 for 0s).
+    Red fives always use the first index of their face (e.g., 16 for 0m/5mr).
+    Regular copies start from index 1 if a red five of the same face exists.
     """
-    # Build a mapping: each face has 4 copies
     result = []
-    counter: dict[str, int] = {}
+    # Track used indices per face to avoid collisions
+    used: dict[str, list[int]] = {}
+
+    # Check which faces have red fives so we can reserve index 0 for them
+    has_red: set[str] = set()
+    for tile in tiles:
+        if is_red(tile):
+            has_red.add(normalize(tile))
 
     for tile in tiles:
         base = normalize(tile)
         face_idx = ALL_TILE_FACES.index(base)
-        copy = counter.get(base, 0)
-        counter[base] = copy + 1
 
-        idx_136 = face_idx * 4 + copy
-        # Red five handling: use specific index
         if is_red(tile):
-            idx_136 = face_idx * 4  # first copy is red
+            idx_136 = face_idx * 4  # red five always gets index 0
+        else:
+            # Find next available copy index, skipping 0 if reserved for red
+            start = 1 if base in has_red else 0
+            face_used = used.get(base, [])
+            copy = start
+            while face_idx * 4 + copy in face_used:
+                copy += 1
+            idx_136 = face_idx * 4 + copy
+
+        used.setdefault(base, []).append(idx_136)
         result.append(idx_136)
     return result
 
 
-def tile_to_display(tile: str, use_unicode: bool = False) -> str:
-    """Get display string for a tile."""
+def tile_to_display(tile: str, use_unicode: bool = False, color: bool = True) -> str:
+    """Get display string for a tile, optionally with ANSI color.
+
+    Colors: man=red, pin=blue, sou=green, wind=default, dragon=per-tile,
+    red fives=bold red.
+    """
     if use_unicode:
         prefix = "🟥" if is_red(tile) else ""
-        return prefix + TILE_UNICODE.get(tile, tile)
-    prefix = "*" if is_red(tile) else ""
-    return prefix + TILE_DISPLAY.get(tile, tile)
+        text = prefix + TILE_UNICODE.get(tile, tile)
+    else:
+        prefix = "*" if is_red(tile) else ""
+        text = prefix + TILE_DISPLAY.get(tile, tile)
+
+    if not color:
+        return text
+
+    RST = "\033[0m"
+    if is_red(tile):
+        return f"\033[1;31m{text}{RST}"  # bold red
+    t = tile_type(tile)
+    if t == TileType.MAN:
+        return f"\033[31m{text}{RST}"    # red
+    if t == TileType.PIN:
+        return f"\033[34m{text}{RST}"    # blue
+    if t == TileType.SOU:
+        return f"\033[32m{text}{RST}"    # green
+    if t == TileType.DRAGON:
+        if tile == "C":
+            return f"\033[31m{text}{RST}"  # red (中)
+        if tile == "F":
+            return f"\033[1;32m{text}{RST}"  # bright green (發)
+        return text  # white (白) — default color
+    return text  # winds — default color
 
 
 def hand_to_display(tiles: list[str], use_unicode: bool = False, sep: str = " ") -> str:

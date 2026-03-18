@@ -12,6 +12,7 @@ import copy
 from game.tiles import (
     build_wall, sort_tiles, normalize, is_red, tile_number, tile_suit,
     tile_type, TileType, dora_from_indicator, WINDS, DRAGONS, WIND_NAMES,
+    tiles_to_136,
 )
 
 
@@ -159,6 +160,9 @@ class RoundState:
     winner: int = -1
     loser: int = -1
     score_deltas: list[int] = field(default_factory=lambda: [0] * 4)
+    han: int = 0
+    fu: int = 0
+    yaku: list[str] = field(default_factory=list)
 
     @property
     def tiles_remaining(self) -> int:
@@ -193,6 +197,8 @@ class GameEngine:
         self.riichi_sticks = 0
         self.round_log: list[dict] = []  # event log for current round
         self.game_log: list[list[dict]] = []  # all rounds
+        self._last_action_was_kan = False  # for rinshan kaihou detection
+        self.round_callback = None  # optional: called with (RoundState) after each round
 
     @property
     def dealer(self) -> int:
@@ -203,6 +209,9 @@ class GameEngine:
         while True:
             result = self.play_round()
             self.game_log.append(list(self.round_log))
+
+            if self.round_callback:
+                self.round_callback(result)
 
             if self._should_end_game(result):
                 break
@@ -305,13 +314,18 @@ class GameEngine:
             if is_riichi_action:
                 self._log_event({"type": "reach_accepted", "player": player_id})
 
-            if call_action and call_action.type in (ActionType.CHI, ActionType.PON, ActionType.KAN):
+            if call_action and call_action.type == ActionType.KAN:
+                # Daiminkan: take tile from discard, form open kan, draw from dead wall
+                self._handle_daiminkan(state, call_action, player_id)
+                state.current_turn = call_action.player
+                continue  # caller draws replacement and continues their turn
+
+            if call_action and call_action.type in (ActionType.CHI, ActionType.PON):
                 self._handle_call(state, call_action)
                 state.current_turn = call_action.player
 
                 # After calling, player must discard from hand (no draw)
                 if not state.players[call_action.player].hand:
-                    # Edge case: empty hand after call (shouldn't happen normally)
                     state.current_turn = (call_action.player + 1) % 4
                     continue
 
@@ -416,6 +430,7 @@ class GameEngine:
 
     def _draw_tile(self, state: RoundState, player_id: int) -> str:
         """Draw a tile from the wall."""
+        self._last_action_was_kan = False
         tile = state.wall[state.wall_pointer]
         state.wall_pointer += 1
         return tile
@@ -529,6 +544,7 @@ class GameEngine:
         """
         ron_actions = []
         pon_actions = []
+        kan_actions = []   # daiminkan (open kan from discard)
         chi_actions = []
 
         for pid in range(4):
@@ -541,39 +557,52 @@ class GameEngine:
             if self._can_ron(state, pid, tile):
                 ron_actions.append(Action(ActionType.RON, pid, tile=tile))
 
-            # Check pon (not allowed in riichi)
-            if not ps.is_riichi and self._can_pon(ps, tile):
-                pon_actions.append(Action(ActionType.PON, pid, tile=tile))
+            if not ps.is_riichi:
+                base = normalize(tile)
+                hand_count = sum(1 for t in ps.hand if normalize(t) == base)
 
-            # Check chi (only from left player / shimocha, not allowed in riichi)
-            if not ps.is_riichi and pid == (discarder + 1) % 4:
-                chi_opts = self._get_chi_options(ps, tile)
-                for opt in chi_opts:
-                    opt.player = pid
-                chi_actions.extend(chi_opts)
+                # Check daiminkan (3 in hand + 1 from discard)
+                if hand_count >= 3 and state.kan_count < 4:
+                    kan_actions.append(Action(ActionType.KAN, pid, tile=tile))
+
+                # Check pon (2+ in hand)
+                if hand_count >= 2:
+                    pon_actions.append(Action(ActionType.PON, pid, tile=tile))
+
+                # Check chi (only from left player / shimocha)
+                if pid == (discarder + 1) % 4:
+                    chi_opts = self._get_chi_options(ps, tile)
+                    for opt in chi_opts:
+                        opt.player = pid
+                    chi_actions.extend(chi_opts)
 
         # Priority resolution
-        all_calls = ron_actions + pon_actions + chi_actions
+        all_calls = ron_actions + kan_actions + pon_actions + chi_actions
         if not all_calls:
             return None
 
-        # Ask each player with call options if they want to call
+        # Ron is always asked first (highest priority, can be from any player)
         for action in ron_actions:
             available = [action, Action(ActionType.SKIP, action.player)]
             choice = self.agents[action.player].choose_action(action.player, state, available)
             if choice.type == ActionType.RON:
                 return choice
 
-        for action in pon_actions:
-            available = [action, Action(ActionType.SKIP, action.player)]
-            choice = self.agents[action.player].choose_action(action.player, state, available)
-            if choice.type == ActionType.PON:
-                return choice
+        # Group remaining calls by player, present all options at once
+        # Priority: kan/pon > chi, but same player gets all options together
+        calls_by_player: dict[int, list[Action]] = {}
+        for a in kan_actions + pon_actions + chi_actions:
+            calls_by_player.setdefault(a.player, []).append(a)
 
-        for action in chi_actions:
-            available = chi_actions + [Action(ActionType.SKIP, action.player)]
-            choice = self.agents[action.player].choose_action(action.player, state, available)
-            if choice.type == ActionType.CHI:
+        # Ask players with kan/pon first (they have priority over chi-only players)
+        high_prio_players = {a.player for a in kan_actions + pon_actions}
+        chi_only_players = set(calls_by_player.keys()) - high_prio_players
+
+        for pid in list(high_prio_players) + list(chi_only_players):
+            actions = calls_by_player[pid]
+            available = actions + [Action(ActionType.SKIP, pid)]
+            choice = self.agents[pid].choose_action(pid, state, available)
+            if choice.type in (ActionType.PON, ActionType.CHI, ActionType.KAN):
                 return choice
 
         return None
@@ -628,6 +657,45 @@ class GameEngine:
         self._log_event({"type": action.type.value, "player": pid, "tile": tile,
                          "target": discarder, "consumed": consumed})
 
+    def _handle_daiminkan(self, state: RoundState, action: Action, discarder: int):
+        """Handle daiminkan (open kan from another player's discard)."""
+        pid = action.player
+        ps = state.players[pid]
+        tile = action.tile
+        base = normalize(tile)
+
+        # Remove tile from discarder's discard pond
+        if state.players[discarder].discards and state.players[discarder].discards[-1] == tile:
+            state.players[discarder].discards.pop()
+
+        # Remove 3 matching tiles from caller's hand
+        removed = []
+        for t in list(ps.hand):
+            if normalize(t) == base and len(removed) < 3:
+                ps.hand.remove(t)
+                removed.append(t)
+        meld = Meld(MeldType.MINKAN, removed + [tile], from_player=discarder, called_tile=tile)
+        ps.melds.append(meld)
+
+        self._log_event({"type": "kan", "player": pid, "tile": tile,
+                         "target": discarder, "consumed": removed})
+
+        # Draw replacement from dead wall
+        self._last_action_was_kan = True
+        if state.dead_wall:
+            replacement = state.dead_wall.pop(0)
+            ps.draw_tile = replacement
+
+        # New dora indicator
+        state.kan_count += 1
+        dora_idx = 4 + state.kan_count
+        if state.kan_count <= 4 and dora_idx < len(state.dead_wall):
+            new_indicator = state.dead_wall[dora_idx]
+            state.dora_indicators.append(new_indicator)
+            self._log_event({"type": "dora", "dora_marker": new_indicator})
+
+        ps.hand = sort_tiles(ps.hand)
+
     def _handle_kan(self, state: RoundState, player_id: int, action: Action):
         """Handle kan declaration."""
         ps = state.players[player_id]
@@ -663,6 +731,7 @@ class GameEngine:
                     break
 
         # Draw replacement from dead wall (take from front)
+        self._last_action_was_kan = True
         if state.dead_wall:
             replacement = state.dead_wall.pop(0)
             ps.draw_tile = replacement
@@ -934,28 +1003,149 @@ class GameEngine:
         return self._is_tenpai(state, state.dealer)
 
     # -------------------------------------------------------------------
-    # Scoring (simplified)
+    # Scoring (han/fu via mahjong library)
     # -------------------------------------------------------------------
+
+    _WIND_MAP = {"E": 27, "S": 28, "W": 29, "N": 30}
+    # Seat-to-wind: dealer=East, +1=South, +2=West, +3=North
+    _SEAT_WINDS = [27, 28, 29, 30]  # EAST, SOUTH, WEST, NORTH
+
+    def _player_wind(self, state: RoundState, player: int) -> int:
+        """Return mahjong-library wind constant for a player's seat wind."""
+        offset = (player - state.dealer) % 4
+        return self._SEAT_WINDS[offset]
 
     def _calculate_win_score(self, state: RoundState, winner: int,
                              is_tsumo: bool, loser: int = -1):
-        """Calculate score for a win. Simplified fixed scoring for now.
+        """Calculate score using mahjong library for proper han/fu."""
+        from mahjong.hand_calculating.hand import HandCalculator
+        from mahjong.hand_calculating.hand_config import HandConfig, OptionalRules
+        from mahjong.meld import Meld as MjMeld
+        from mahjong.constants import EAST, SOUTH, WEST, NORTH
 
-        TODO: integrate mahjong library for proper han/fu calculation.
-        """
-        # Simplified: assign mangan (8000/12000)
+        ps = state.players[winner]
         is_dealer = (winner == state.dealer)
-        base = 12000 if is_dealer else 8000
 
-        # Add honba
+        # Build the full 14-tile hand in 136-format
+        # closed_tiles includes hand + draw_tile
+        closed = list(ps.hand)
+        if ps.draw_tile:
+            closed.append(ps.draw_tile)
+
+        # Add meld tiles to form complete 14-tile hand
+        all_tiles = list(closed)
+        for m in ps.melds:
+            all_tiles.extend(m.tiles)
+
+        try:
+            tiles_136 = tiles_to_136(all_tiles)
+
+            # Win tile
+            if is_tsumo:
+                win_tile_str = ps.draw_tile
+            else:
+                # Ron: the tile that was discarded
+                # draw_tile was set to the ron tile in _handle_ron
+                win_tile_str = ps.draw_tile
+            win_tile_136 = tiles_to_136([win_tile_str])[0]
+
+            # Build melds for mahjong library
+            mj_melds = []
+            for m in ps.melds:
+                meld_136 = tiles_to_136(m.tiles)
+                if m.type == MeldType.CHI:
+                    mj_melds.append(MjMeld(MjMeld.CHI, meld_136, opened=True))
+                elif m.type == MeldType.PON:
+                    mj_melds.append(MjMeld(MjMeld.PON, meld_136, opened=True))
+                elif m.type == MeldType.ANKAN:
+                    mj_melds.append(MjMeld(MjMeld.KAN, meld_136, opened=False))
+                elif m.type in (MeldType.MINKAN, MeldType.KAKAN):
+                    mj_melds.append(MjMeld(MjMeld.KAN, meld_136, opened=True))
+
+            # Dora indicators in 136-format (include ura-dora for riichi)
+            all_indicators = list(state.dora_indicators)
+            if ps.is_riichi and state.ura_dora_indicators:
+                all_indicators.extend(state.ura_dora_indicators)
+            dora_136 = tiles_to_136(all_indicators) if all_indicators else None
+
+            # Hand config
+            config = HandConfig(
+                is_tsumo=is_tsumo,
+                is_riichi=ps.is_riichi,
+                is_ippatsu=ps.is_ippatsu,
+                is_haitei=is_tsumo and state.tiles_remaining == 0,
+                is_houtei=not is_tsumo and state.tiles_remaining == 0,
+                is_rinshan=is_tsumo and state.kan_count > 0 and self._last_action_was_kan,
+                player_wind=self._player_wind(state, winner),
+                round_wind=self._WIND_MAP.get(state.round_wind, EAST),
+                options=OptionalRules(has_aka_dora=True),
+            )
+
+            calc = HandCalculator()
+            result = calc.estimate_hand_value(
+                tiles_136, win_tile_136,
+                melds=mj_melds if mj_melds else None,
+                dora_indicators=dora_136,
+                config=config,
+            )
+
+            if result.error is None and result.cost:
+                self._apply_cost(state, winner, loser, is_tsumo, is_dealer, result.cost)
+                state.han = result.han
+                state.fu = result.fu
+                state.yaku = [str(y) for y in result.yaku] if result.yaku else []
+                self.riichi_sticks = 0
+                return
+
+        except Exception:
+            pass
+
+        # Fallback: fixed mangan if mahjong library fails
+        self._apply_fixed_mangan(state, winner, loser, is_tsumo, is_dealer)
+        self.riichi_sticks = 0
+
+    def _apply_cost(self, state: RoundState, winner: int, loser: int,
+                    is_tsumo: bool, is_dealer: bool, cost: dict):
+        """Apply mahjong library cost dict to score deltas."""
+        honba_bonus = state.honba * 300
+        riichi_bonus = state.riichi_sticks * 1000
+
+        if is_tsumo:
+            main_pay = cost["main"]       # what dealer pays (or each non-dealer if winner is dealer)
+            additional = cost["additional"]  # what non-dealers pay (0 if winner is dealer)
+            total_gain = 0
+            for i in range(4):
+                if i == winner:
+                    continue
+                if is_dealer:
+                    # Dealer tsumo: everyone pays main
+                    state.score_deltas[i] = -(main_pay + honba_bonus // 3)
+                else:
+                    if i == state.dealer:
+                        state.score_deltas[i] = -(main_pay + honba_bonus // 3)
+                    else:
+                        state.score_deltas[i] = -(additional + honba_bonus // 3)
+                total_gain -= state.score_deltas[i]
+            state.score_deltas[winner] = total_gain + riichi_bonus
+        else:
+            # Ron: loser pays total
+            total = cost["main"] + honba_bonus
+            state.score_deltas[loser] = -total
+            state.score_deltas[winner] = total + riichi_bonus
+
+    def _apply_fixed_mangan(self, state: RoundState, winner: int, loser: int,
+                            is_tsumo: bool, is_dealer: bool):
+        """Fallback: assign fixed mangan score."""
+        base = 12000 if is_dealer else 8000
         base += state.honba * 300
+        riichi_bonus = state.riichi_sticks * 1000
 
         if is_tsumo:
             if is_dealer:
                 each = base // 3
                 for i in range(4):
                     if i == winner:
-                        state.score_deltas[i] = base + state.riichi_sticks * 1000
+                        state.score_deltas[i] = base + riichi_bonus
                     else:
                         state.score_deltas[i] = -each
             else:
@@ -963,17 +1153,14 @@ class GameEngine:
                 other_pay = base // 4
                 for i in range(4):
                     if i == winner:
-                        state.score_deltas[i] = base + state.riichi_sticks * 1000
+                        state.score_deltas[i] = base + riichi_bonus
                     elif i == state.dealer:
                         state.score_deltas[i] = -dealer_pay
                     else:
                         state.score_deltas[i] = -other_pay
         else:
-            # Ron
-            state.score_deltas[winner] = base + state.riichi_sticks * 1000
+            state.score_deltas[winner] = base + riichi_bonus
             state.score_deltas[loser] = -base
-
-        self.riichi_sticks = 0
 
     # -------------------------------------------------------------------
     # Logging

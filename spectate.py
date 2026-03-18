@@ -105,6 +105,11 @@ def display_result(state: RoundState, engine: GameEngine):
     else:
         print(f"  {state.result.value}")
 
+    if state.han > 0:
+        print(f"\n  {state.han}翻 {state.fu}符")
+        if state.yaku:
+            print(f"  役: {', '.join(state.yaku)}")
+
     print(f"\n  点数変動:")
     for i in range(4):
         delta = state.score_deltas[i]

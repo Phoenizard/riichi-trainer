@@ -5,7 +5,9 @@ Human player sits at seat 0, AI opponents at seats 1-3.
 
 from __future__ import annotations
 import os
+import re
 import sys
+import unicodedata
 
 from game.engine import (
     GameEngine, Action, ActionType, RoundState, PlayerState, RoundResult,
@@ -29,12 +31,28 @@ try:
 except ImportError:
     pass
 
+W = 60  # display width
 
 # ---------------------------------------------------------------------------
 # Display helpers
 # ---------------------------------------------------------------------------
 
-SEAT_NAMES = ["You (自家)", "Right (下家)", "Across (対面)", "Left (上家)"]
+SEAT_NAMES = ["You (自家)", "下家(右)", "対面", "上家(左)"]
+SEAT_SHORT = ["自家", "下家", "対面", "上家"]
+_ANSI_RE = re.compile(r'\033\[[^m]*m')
+
+
+def _vwidth(s: str) -> int:
+    """Visible width of a string, ignoring ANSI escape codes."""
+    clean = _ANSI_RE.sub('', s)
+    return sum(2 if unicodedata.east_asian_width(c) in ('F', 'W') else 1
+               for c in clean)
+
+
+def _vpad(s: str, width: int) -> str:
+    """Pad string to target visible width with trailing spaces."""
+    pad = width - _vwidth(s)
+    return s + ' ' * max(pad, 0)
 
 
 def clear_screen():
@@ -45,70 +63,113 @@ def print_header(state: RoundState):
     """Print round info header."""
     wind = WIND_KANJI.get(state.round_wind, state.round_wind)
     num = state.round_number + 1
-    print(f"{'='*60}")
-    print(f"  {wind}{num}局 {state.honba}本場  供託リーチ棒: {state.riichi_sticks}")
-    print(f"  残り: {state.tiles_remaining}枚")
-    print(f"  ドラ表示: {' '.join(tile_to_display(d) for d in state.dora_indicators)}")
-    doras = [dora_from_indicator(d) for d in state.dora_indicators]
-    print(f"  ドラ:     {' '.join(tile_to_display(d) for d in doras)}")
-    print(f"{'='*60}")
+    print(f"\033[1m{'═' * W}\033[0m")
+    print(f"  {wind}{num}局 {state.honba}本場    "
+          f"供託: {state.riichi_sticks}本    残り: {state.tiles_remaining}枚")
+    indicators = ' '.join(tile_to_display(d) for d in state.dora_indicators)
+    doras = ' '.join(tile_to_display(dora_from_indicator(d))
+                     for d in state.dora_indicators)
+    print(f"  ドラ表示: {indicators}  →  ドラ: {doras}")
+    print(f"\033[1m{'═' * W}\033[0m")
+
+
+PLAYER_WINDS = ["東", "南", "西", "北"]
+
+
+def _seat_wind(state: RoundState, player: int) -> str:
+    """Get the seat wind kanji for a player."""
+    return PLAYER_WINDS[(player - state.dealer) % 4]
 
 
 def print_scores(state: RoundState):
-    """Print all player scores."""
+    """Print all player scores with seat wind."""
+    RST = "\033[0m"
+    RIICHI = f"\033[1;33m⚡立直{RST}"
+    parts = []
     for i in range(4):
-        marker = "◀" if i == state.current_turn else " "
-        riichi = " [リーチ]" if state.players[i].is_riichi else ""
-        print(f"  {marker} {SEAT_NAMES[i]}: {state.scores[i]:>6}点{riichi}")
+        turn = "\033[1m▶\033[0m" if i == state.current_turn else " "
+        wind = _seat_wind(state, i)
+        riichi = f" {RIICHI}" if state.players[i].is_riichi else ""
+        parts.append(f" {turn}{wind}{SEAT_SHORT[i]} {state.scores[i]:>6}{riichi}")
+    print(" │".join(parts))
     print()
 
 
-def print_discards(state: RoundState):
-    """Print discard ponds for all players."""
-    print("─── 捨て牌 ───")
-    for i in range(4):
-        ps = state.players[i]
-        discards_str = " ".join(tile_to_display(t) for t in ps.discards)
-        label = SEAT_NAMES[i][:10]
-        print(f"  {label:>10}: {discards_str}")
-    print()
-
-
-def print_melds(ps: PlayerState, label: str = ""):
-    """Print open melds."""
+def format_melds(ps: PlayerState, seat_names: list[str] = None) -> str:
+    """Format open melds with source player indicated."""
     if not ps.melds:
-        return
+        return ""
     meld_strs = []
     for m in ps.melds:
         tiles = " ".join(tile_to_display(t) for t in m.tiles)
-        meld_type = {"chi": "チー", "pon": "ポン", "ankan": "暗槓",
-                     "minkan": "明槓", "kakan": "加槓"}.get(m.type.value, m.type.value)
-        meld_strs.append(f"[{meld_type}: {tiles}]")
-    print(f"  {label}副露: {' '.join(meld_strs)}")
+        mtype = {"chi": "吃", "pon": "碰", "ankan": "暗杠",
+                 "minkan": "明杠", "kakan": "加杠"}.get(m.type.value, m.type.value)
+        # Source annotation
+        if m.from_player >= 0 and m.type != MeldType.ANKAN:
+            names = seat_names or SEAT_SHORT
+            src = names[m.from_player] if m.from_player < len(names) else f"P{m.from_player}"
+            meld_strs.append(f"[{mtype}←{src}: {tiles}]")
+        else:
+            meld_strs.append(f"[{mtype}: {tiles}]")
+    return " ".join(meld_strs)
+
+
+def print_discards(state: RoundState):
+    """Print discard ponds and melds for all players."""
+    RST = "\033[0m"
+    RIICHI_MARK = f"\033[1;33m⟫{RST}"
+    print("─── 河 / 副露 " + "─" * (W - 14))
+    for i in range(4):
+        ps = state.players[i]
+        # Discard pond with riichi marker
+        parts = []
+        for j, t in enumerate(ps.discards):
+            tile_str = tile_to_display(t)
+            if ps.is_riichi and j == ps.riichi_turn:
+                tile_str = RIICHI_MARK + tile_str
+            parts.append(tile_str)
+        discards_str = " ".join(parts) if parts else "\033[2m--\033[0m"
+        label = _vpad(SEAT_SHORT[i], 4)
+        print(f"  {label} 河: {discards_str}")
+        # Melds
+        melds_str = format_melds(ps, SEAT_SHORT)
+        if melds_str:
+            print(f"       副露: {melds_str}")
+    print()
 
 
 def print_hand(ps: PlayerState, show_index: bool = True):
-    """Print the human player's hand."""
+    """Print the human player's hand with aligned indices."""
     tiles = sort_tiles(ps.hand)
-    print("─── 手牌 ───")
+    GAP = 1  # space between tiles
+    print("─── 手牌 " + "─" * (W - 9))
 
-    # Index row
+    # Calculate display width per tile for alignment
+    displays = [tile_to_display(t) for t in tiles]
+    widths = [_vwidth(d) for d in displays]
+
+    # Index row — each index padded to match its tile's display width
     if show_index:
         idx_row = "  "
-        for i in range(len(tiles)):
-            idx_row += f" {i:<4}"
+        for i, w in enumerate(widths):
+            idx_str = str(i)
+            idx_row += idx_str + ' ' * (w - len(idx_str) + GAP)
         print(idx_row)
 
     # Tile row
-    tile_row = "  " + " ".join(f"{tile_to_display(t)}" for t in tiles)
-    print(tile_row)
+    tile_parts = []
+    for d, w in zip(displays, widths):
+        tile_parts.append(_vpad(d, w))
+    print("  " + (' ' * GAP).join(tile_parts))
 
     # Draw tile
     if ps.draw_tile:
         draw_idx = len(tiles)
-        print(f"  ツモ [{draw_idx}]: {tile_to_display(ps.draw_tile)}")
+        print(f"\n  ツモ [{draw_idx}]: {tile_to_display(ps.draw_tile)}")
 
-    print_melds(ps, "自家")
+    melds_str = format_melds(ps, SEAT_SHORT)
+    if melds_str:
+        print(f"  副露: {melds_str}")
     print()
 
 
@@ -146,7 +207,7 @@ class HumanAgent:
 
         # Show special actions first
         if special_actions:
-            print("─── 特殊行動 ───")
+            print("─── 行動選択 " + "─" * (W - 12))
             for i, a in enumerate(special_actions):
                 desc = self._describe_action(a, ps)
                 print(f"  [{chr(ord('a') + i)}] {desc}")
@@ -156,10 +217,11 @@ class HumanAgent:
         if discard_actions:
             tiles = sort_tiles(ps.hand)
             all_tiles = tiles + ([ps.draw_tile] if ps.draw_tile else [])
-            print(f"打牌を選択 (0-{len(all_tiles)-1})")
+            print(f"  数字 0‒{len(all_tiles)-1} で打牌", end="")
             if special_actions:
-                letters = "".join(chr(ord('a') + i) for i in range(len(special_actions)))
-                print(f"特殊行動: {letters}")
+                letters = "/".join(chr(ord('a') + i) for i in range(len(special_actions)))
+                print(f"   英字 {letters} で特殊行動", end="")
+            print()
 
         while True:
             try:
@@ -193,7 +255,7 @@ class HumanAgent:
                         # If no exact match, create one
                         return Action(ActionType.DISCARD, player_id, tile=chosen_tile)
 
-                    print(f"0-{len(all_tiles)-1}の範囲で入力してください")
+                    print(f"0‒{len(all_tiles)-1} の範囲で入力してください")
                     continue
 
                 print("無効な入力です")
@@ -207,26 +269,26 @@ class HumanAgent:
     def _describe_action(self, action: Action, ps: PlayerState) -> str:
         """Human-readable description of a special action."""
         if action.type == ActionType.TSUMO:
-            return f"ツモ! ({tile_to_display(ps.draw_tile)}で和了)"
+            return f"ツモ和了! ({tile_to_display(ps.draw_tile)})"
 
         if action.type == ActionType.RON:
-            return f"ロン! ({tile_to_display(action.tile)}で和了)"
+            return f"ロン和了! ({tile_to_display(action.tile)})"
 
         if action.type == ActionType.RIICHI:
-            return f"リーチ宣言 → 打 {tile_to_display(action.tile)}"
+            return f"立直 → 打 {tile_to_display(action.tile)}"
 
         if action.type == ActionType.PON:
-            return f"ポン ({tile_to_display(action.tile)})"
+            return f"碰 {tile_to_display(action.tile)}"
 
         if action.type == ActionType.CHI:
             meld_str = " ".join(tile_to_display(t) for t in action.meld_tiles)
-            return f"チー ({meld_str} + {tile_to_display(action.tile)})"
+            return f"吃 ({meld_str} + {tile_to_display(action.tile)})"
 
         if action.type == ActionType.KAN:
-            return f"カン ({tile_to_display(action.tile)})"
+            return f"杠 {tile_to_display(action.tile)}"
 
         if action.type == ActionType.SKIP:
-            return "パス (見送り)"
+            return "跳过"
 
         return str(action.type.value)
 
@@ -238,22 +300,22 @@ class HumanAgent:
 
         if etype == "discard" and player != 0:
             tile = event.get("tile", "")
-            name = SEAT_NAMES[player] if 0 <= player < 4 else f"Player {player}"
+            name = SEAT_SHORT[player] if 0 <= player < 4 else f"P{player}"
             print(f"  {name} → 打 {tile_to_display(tile)}")
 
         elif etype == "draw" and player != 0:
             pass  # Don't show other players' draws
 
         elif etype in ("chi", "pon", "kan") and player != 0:
-            name = SEAT_NAMES[player] if 0 <= player < 4 else f"Player {player}"
-            call_name = {"chi": "チー(吃)", "pon": "ポン(碰)", "kan": "カン(杠)"}.get(etype, etype)
+            name = SEAT_SHORT[player] if 0 <= player < 4 else f"P{player}"
+            call_name = {"chi": "吃", "pon": "碰", "kan": "杠"}.get(etype, etype)
             tile = event.get("tile", "")
             print(f"  {name} → {call_name} {tile_to_display(tile)}")
             time.sleep(1)
 
         elif etype == "reach" and player != 0:
-            name = SEAT_NAMES[player] if 0 <= player < 4 else f"Player {player}"
-            print(f"  {name} → リーチ(立直)!")
+            name = SEAT_SHORT[player] if 0 <= player < 4 else f"P{player}"
+            print(f"  \033[1;33m{name} → 立直!\033[0m")
             time.sleep(1)
 
 
@@ -261,55 +323,75 @@ class HumanAgent:
 # Game runner
 # ---------------------------------------------------------------------------
 
+_engine_ref = None  # set during run_game for round result display
+
+
 def print_round_result(state: RoundState):
     """Print the result of a round."""
-    print("\n" + "=" * 60)
+    clear_screen()
+    print(f"\033[1m{'═' * W}\033[0m")
+
     if state.result == RoundResult.TSUMO:
         name = SEAT_NAMES[state.winner]
-        print(f"  {name} ツモ和了!")
+        print(f"  \033[1m{name} ツモ和了!\033[0m")
     elif state.result == RoundResult.RON:
         winner = SEAT_NAMES[state.winner]
         loser = SEAT_NAMES[state.loser]
-        print(f"  {winner} ロン! (放銃: {loser})")
+        print(f"  \033[1m{winner} ロン!\033[0m (放銃: {loser})")
     elif state.result == RoundResult.DRAW_NORMAL:
         print("  流局 (荒牌平局)")
     else:
         print(f"  {state.result.value}")
 
-    print("\n  点数変動:")
+    # Show han/fu and yaku if available
+    if state.han > 0:
+        print(f"\n  \033[1m{state.han}翻 {state.fu}符\033[0m")
+        if state.yaku:
+            print(f"  役: {', '.join(state.yaku)}")
+
+    print(f"\n{'─' * W}")
     for i in range(4):
         delta = state.score_deltas[i]
         sign = "+" if delta >= 0 else ""
-        print(f"    {SEAT_NAMES[i]}: {sign}{delta}")
-    print("=" * 60)
-    input("\nEnterで続行...")
+        color = "\033[32m" if delta > 0 else ("\033[31m" if delta < 0 else "")
+        rst = "\033[0m" if color else ""
+        total_str = ""
+        if _engine_ref:
+            total_str = f"  → {_engine_ref.game_scores[i]:>6}点"
+        print(f"  {_vpad(SEAT_SHORT[i], 4)}: {color}{sign}{delta:>6}{rst}{total_str}")
+    print(f"{'═' * W}")
+    input("\n  Enter で続行...")
 
 
 def run_game():
     """Run a full game in the terminal."""
+    global _engine_ref
     clear_screen()
-    print("╔══════════════════════════════════════╗")
-    print("║     立直麻雀 AI トレーナー            ║")
-    print("║     Riichi Mahjong AI Trainer        ║")
-    print("╚══════════════════════════════════════╝")
+    print(f"\033[1m{'═' * W}\033[0m")
+    print(f"  立直麻雀 AI トレーナー  /  Riichi Mahjong AI Trainer")
+    print(f"{'═' * W}")
     print()
-    print("あなた = 席0 (自家)")
-    print("AI対戦相手 × 3")
+    print(f"  あなた = 自家 (席0)")
+    print(f"  AI対戦相手 × 3")
     print()
-    input("Enterでゲーム開始...")
 
     human = HumanAgent()
     if _USE_MORTAL:
-        print("AI: Mortal v4 (local)")
+        print("  AI: Mortal v4 (local)")
         agents = [human,
                   MortalAgent.create_libriichi(1, _MODEL_PATH),
                   MortalAgent.create_libriichi(2, _MODEL_PATH),
                   MortalAgent.create_libriichi(3, _MODEL_PATH)]
     else:
-        print("AI: MockAgent (heuristic)")
+        print("  AI: MockAgent (heuristic)")
         agents = [human, MockAgent("AI-1"), MockAgent("AI-2"), MockAgent("AI-3")]
 
+    print()
+    input("  Enter でゲーム開始...")
+
     engine = GameEngine(agents)
+    _engine_ref = engine
+    engine.round_callback = print_round_result
 
     try:
         final_scores = engine.play_game()
@@ -319,19 +401,20 @@ def run_game():
 
     # Final results
     clear_screen()
-    print("╔══════════════════════════════════════╗")
-    print("║           最終結果                    ║")
-    print("╚══════════════════════════════════════╝")
+    print(f"\033[1m{'═' * W}\033[0m")
+    print(f"  \033[1m最終結果\033[0m")
+    print(f"{'═' * W}")
     print()
 
     ranked = sorted(range(4), key=lambda i: final_scores[i], reverse=True)
     for rank, i in enumerate(ranked, 1):
-        name = SEAT_NAMES[i]
-        print(f"  {rank}位: {name} - {final_scores[i]}点")
+        marker = " \033[1;33m★\033[0m" if i == 0 else ""
+        print(f"  {rank}位  {_vpad(SEAT_NAMES[i], 12)} {final_scores[i]:>6}点{marker}")
 
     print()
     your_rank = ranked.index(0) + 1
-    print(f"あなたの順位: {your_rank}位")
+    print(f"  あなたの順位: {your_rank}位")
+    print()
 
 
 if __name__ == "__main__":
