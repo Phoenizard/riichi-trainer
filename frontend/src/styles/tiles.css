@@ -1,0 +1,537 @@
+/* Tile rendering — CSS-only, no images */
+
+.tile {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 52px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: default;
+  user-select: none;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+  flex-shrink: 0;
+}
+
+.tile-number {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.tile-suit {
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.tile-honor {
+  font-size: 18px;
+  line-height: 1;
+}
+
+/* Suit colors */
+.tile-man { color: #c0392b; }
+.tile-pin { color: #2980b9; }
+.tile-sou { color: #27ae60; }
+.tile-wind { color: #2c3e50; }
+.tile-dragon-C { color: #c0392b; }
+.tile-dragon-F { color: #27ae60; }
+.tile-dragon-P { color: #7f8c8d; }
+
+/* Red five — dot marker instead of border (avoids conflict with recommendation border) */
+.tile-red {
+  background: #fff5f5;
+  position: relative;
+}
+.tile-red::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  background: #e74c3c;
+  border-radius: 50%;
+}
+
+/* Interactive */
+.tile-clickable {
+  cursor: pointer;
+}
+.tile-clickable:hover {
+  background: #e8f4fd;
+  transform: translateY(-4px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Coach recommendation highlight */
+.tile-recommended {
+  box-shadow: 0 0 0 2px #f39c12;
+}
+
+/* Face-down tile */
+.tile-back {
+  background: #1a5276;
+  border-color: #154360;
+  color: transparent;
+}
+
+/* Small tiles (for discard ponds) */
+.tile-small {
+  width: 28px;
+  height: 40px;
+  font-size: 11px;
+}
+.tile-small .tile-number {
+  font-size: 13px;
+}
+.tile-small .tile-suit {
+  font-size: 9px;
+}
+.tile-small .tile-honor {
+  font-size: 14px;
+}
+.tile-small.tile-red::after {
+  width: 4px;
+  height: 4px;
+  top: 2px;
+  right: 2px;
+}
+
+/* Sideways tile (for riichi discard) */
+.tile-sideways {
+  transform: rotate(90deg);
+  margin: 0 6px;
+}
+
+/* ==================== Layout ==================== */
+
+/* Color palette */
+:root {
+  --bg: #f5f5f0;
+  --table-bg: #e8e4df;
+  --card-bg: #ffffff;
+  --text: #2c3e50;
+  --accent: #3498db;
+  --success: #27ae60;
+  --danger: #e74c3c;
+  --coach: #f39c12;
+  --riichi: #f1c40f;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Game info bar */
+.game-info-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: var(--card-bg);
+  border-bottom: 1px solid #ddd;
+  font-size: 14px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.game-info-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.score-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.score-badge-active {
+  background: #e8f4fd;
+  font-weight: 700;
+}
+
+.score-badge-riichi {
+  border: 2px solid var(--riichi);
+}
+
+.wind-label {
+  font-weight: 700;
+  font-size: 12px;
+  color: #666;
+}
+
+/* Table area */
+.table-area {
+  display: grid;
+  grid-template-columns: 1fr 2fr 1fr;
+  grid-template-rows: auto auto auto;
+  gap: 8px;
+  padding: 8px 16px;
+  min-height: 300px;
+  background: var(--table-bg);
+}
+
+.table-top {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.table-left {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.table-center {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 80px;
+}
+
+.table-right {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.table-bottom {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+/* Opponent area */
+.opponent-area {
+  background: var(--card-bg);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 12px;
+  border: 2px solid transparent;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.opponent-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 8px rgba(52, 152, 219, 0.3);
+}
+
+.opponent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-weight: 600;
+  gap: 4px;
+}
+
+.peek-btn {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 4px;
+  opacity: 0.6;
+}
+.peek-btn:hover {
+  opacity: 1;
+  background: #f0f0f0;
+}
+
+/* Discard pond */
+.discard-pond {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-width: 200px;
+}
+
+/* Meld display */
+.meld-group {
+  display: inline-flex;
+  gap: 1px;
+  margin-right: 8px;
+  padding: 2px 4px;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 3px;
+}
+
+.meld-source-label {
+  font-size: 9px;
+  color: #999;
+  align-self: flex-end;
+  margin-right: 1px;
+}
+
+.melds-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+/* Hand area */
+.hand-area {
+  padding: 12px 16px;
+  background: var(--card-bg);
+  border-top: 1px solid #ddd;
+}
+
+.hand-tiles {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+
+.draw-tile-gap {
+  margin-left: 16px;
+}
+
+/* Action bar */
+.action-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+
+.action-btn {
+  padding: 6px 16px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: var(--card-bg);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+
+.action-btn:hover {
+  background: #e8f4fd;
+}
+
+.action-btn-tsumo, .action-btn-ron {
+  background: #e8f8e8;
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.action-btn-riichi {
+  background: #fffde8;
+  border-color: var(--riichi);
+}
+
+.action-btn-call {
+  background: #f0e6ff;
+  border-color: #9b59b6;
+  color: #8e44ad;
+  animation: call-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes call-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(155, 89, 182, 0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(155, 89, 182, 0.15); }
+}
+
+.action-btn-skip {
+  color: #888;
+}
+
+.action-btn-chi-option {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+/* Coach panel */
+.coach-panel {
+  background: var(--card-bg);
+  border-top: 2px solid var(--coach);
+  padding: 0;
+}
+
+.coach-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--coach);
+}
+
+.coach-body {
+  padding: 8px 16px 12px;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  font-size: 13px;
+}
+
+.coach-recommend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.coach-candidates {
+  display: flex;
+  gap: 12px;
+}
+
+.coach-candidate {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.coach-score-bar {
+  height: 8px;
+  background: var(--coach);
+  border-radius: 4px;
+  opacity: 0.7;
+}
+
+/* Round result modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-content {
+  background: var(--card-bg);
+  border-radius: 8px;
+  padding: 24px 32px;
+  max-width: 480px;
+  width: 90%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.modal-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+
+.modal-yaku {
+  margin: 12px 0;
+  font-size: 14px;
+}
+
+.modal-scores {
+  margin: 16px 0;
+}
+
+.modal-score-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 14px;
+}
+
+.score-positive { color: var(--success); font-weight: 600; }
+.score-negative { color: var(--danger); font-weight: 600; }
+
+.modal-btn {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 4px;
+  background: var(--accent);
+  color: white;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 16px;
+}
+
+.modal-btn:hover {
+  opacity: 0.9;
+}
+
+/* AI thinking spinner */
+.ai-thinking {
+  color: #888;
+  font-size: 14px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* Lobby */
+.lobby {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  gap: 24px;
+}
+
+.lobby-title {
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.lobby-subtitle {
+  font-size: 16px;
+  color: #666;
+}
+
+.lobby-btn {
+  padding: 12px 32px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: white;
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lobby-btn:hover {
+  opacity: 0.9;
+}
+
+/* Dora indicators */
+.dora-section {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dora-label {
+  font-size: 12px;
+  color: #666;
+  margin-right: 4px;
+}

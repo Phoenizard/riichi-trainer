@@ -1,5 +1,8 @@
 mahjong>=1.4.0
 requests>=2.28.0
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+websockets>=11.0
 
 # Optional: only needed for local model inference (not needed for MJAPI online mode)
 # torch>=2.0.0
