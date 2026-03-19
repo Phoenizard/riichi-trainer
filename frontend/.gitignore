@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Vite template assets (unused)
+src/assets/
+README.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
