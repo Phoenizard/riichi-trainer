@@ -14,6 +14,7 @@ from typing import Optional
 
 from game.engine import GameEngine, RoundState
 from ai.mock_agent import MockAgent
+from backend.db import GameLogger
 from backend.web_agent import WebAgent, GameInterrupted, serialize_game_info, serialize_meld
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,10 @@ class GameSession:
         self._thread: Optional[threading.Thread] = None
         self.engine: Optional[GameEngine] = None
         self._running = False
+        self.logger = GameLogger()
+        self.game_id: Optional[str] = None
+        self.round_index = 0
+        self._current_round_id: Optional[str] = None
 
         # Auto-detect Mortal if not specified
         if use_mortal is None:
@@ -67,7 +72,13 @@ class GameSession:
         agents = [self.web_agent] + self.ai_agents
         self.engine = GameEngine(agents)
         self.web_agent._engine_ref = self.engine
+        self.web_agent._logger = self.logger
         self.engine.round_callback = self._on_round_end
+        self.game_id = self.logger.start_game()
+        self.round_index = 0
+        # Create first round record so decisions can reference it
+        first_round_id = self.logger.start_round(self.game_id, 0)
+        self.web_agent._current_round_id = first_round_id
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -80,8 +91,14 @@ class GameSession:
                 "type": "game_over",
                 "scores": scores,
             })
+            # Finalize game record
+            if self.game_id:
+                placement = sorted(range(4), key=lambda i: scores[i], reverse=True).index(0) + 1
+                self.logger.end_game(self.game_id, list(scores), placement)
         except GameInterrupted:
             logger.info("Game interrupted")
+            if self.game_id and self.engine:
+                self.logger.end_game(self.game_id, list(self.engine.game_scores), 0)
         except Exception as e:
             logger.exception(f"Engine error: {e}")
             self.web_agent.ws_send_queue.put({
@@ -93,6 +110,17 @@ class GameSession:
 
     def _on_round_end(self, state: RoundState) -> None:
         """Called by engine after each round (in engine thread)."""
+        # Finalize round in database and prepare next
+        round_stats = None
+        if self.game_id:
+            current_round_id = self.web_agent._current_round_id
+            self.logger.end_round(current_round_id, state)
+            round_stats = self.logger.get_round_stats(current_round_id)
+            self.round_index += 1
+            # Pre-create next round record for upcoming decisions
+            next_round_id = self.logger.start_round(self.game_id, self.round_index)
+            self.web_agent._current_round_id = next_round_id
+
         # Build winner's hand data
         winning_hand = []
         winning_melds = []
@@ -101,8 +129,16 @@ class GameSession:
             winning_hand = wp.hand + ([wp.draw_tile] if wp.draw_tile else [])
             winning_melds = [serialize_meld(m) for m in wp.melds]
 
+        # Build tenpai hands for draw results
+        tenpai_hands = {}
+        for seat, data in state.tenpai_hands.items():
+            tenpai_hands[seat] = {
+                "hand": data["hand"],
+                "melds": [serialize_meld(m) for m in data["melds"]],
+            }
+
         # Send round result
-        self.web_agent.ws_send_queue.put({
+        msg = {
             "type": "round_result",
             "result": state.result.value if state.result else "unknown",
             "winner": state.winner,
@@ -114,7 +150,11 @@ class GameSession:
             "scores": list(self.engine.game_scores),
             "winning_hand": winning_hand,
             "winning_melds": winning_melds,
-        })
+            "tenpai_hands": tenpai_hands,
+        }
+        if round_stats:
+            msg["round_stats"] = round_stats
+        self.web_agent.ws_send_queue.put(msg)
 
         # Block until frontend sends "continue_round"
         # Same pattern as terminal UI's input("Enter で続行...")

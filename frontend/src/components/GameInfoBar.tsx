@@ -3,6 +3,7 @@ import Tile from './Tile';
 import type { GameInfo } from '../types/game';
 
 const SEAT_NAMES = ['自家', '下家', '対面', '上家'];
+const WIND_LABELS: Record<string, string> = { E: '東', S: '南', W: '西', N: '北' };
 
 interface GameInfoBarProps {
   gameInfo: GameInfo;
@@ -14,7 +15,7 @@ const GameInfoBar: React.FC<GameInfoBarProps> = ({ gameInfo }) => {
     scores, dora_indicators, tiles_remaining, players, current_turn,
   } = gameInfo;
 
-  const roundLabel = `${round_wind}${round_number + 1}局`;
+  const roundLabel = `${WIND_LABELS[round_wind] || round_wind}${round_number + 1}局`;
 
   return (
     <div className="game-info-bar">
@@ -32,7 +33,7 @@ const GameInfoBar: React.FC<GameInfoBarProps> = ({ gameInfo }) => {
       </div>
       <div className="game-info-section">
         {scores.map((score, i) => {
-          const wind = players[i]?.seat_wind || '';
+          const wind = WIND_LABELS[players[i]?.seat_wind] || players[i]?.seat_wind || '';
           const isActive = i === current_turn;
           const isRiichi = players[i]?.is_riichi;
           return (

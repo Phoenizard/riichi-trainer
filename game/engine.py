@@ -163,6 +163,7 @@ class RoundState:
     han: int = 0
     fu: int = 0
     yaku: list[str] = field(default_factory=list)
+    tenpai_hands: dict[int, dict] = field(default_factory=dict)  # seat -> {hand, melds}
 
     @property
     def tiles_remaining(self) -> int:
@@ -468,10 +469,17 @@ class GameEngine:
         """Get action from player/agent."""
         available = self._compute_available_actions(state, player_id, phase)
 
-        if len(available) == 1:
-            return available[0]
-
+        # Always ask the agent — even with a single option — so it can
+        # display the game state (e.g. show drawn tile during riichi).
         action = self.agents[player_id].choose_action(player_id, state, available)
+
+        # SKIP means "decline tsumo" — convert to tsumogiri discard
+        if action.type == ActionType.SKIP and phase == "draw":
+            ps = state.players[player_id]
+            if ps.draw_tile:
+                return Action(ActionType.DISCARD, player_id,
+                              tile=ps.draw_tile, is_tsumogiri=True)
+
         return action
 
     def _compute_available_actions(self, state: RoundState, player_id: int,
@@ -541,21 +549,22 @@ class GameEngine:
         """Check if any player wants to call the discarded tile.
 
         Priority: Ron > Pon/Kan > Chi
+        Each player sees ALL their available options at once (ron + pon + chi + skip).
+        All ron decisions are resolved before any pon/chi is accepted.
         """
-        ron_actions = []
-        pon_actions = []
-        kan_actions = []   # daiminkan (open kan from discard)
-        chi_actions = []
+        # 1. Collect all possible actions per player
+        actions_by_player: dict[int, list[Action]] = {}
 
         for pid in range(4):
             if pid == discarder:
                 continue
 
             ps = state.players[pid]
+            actions: list[Action] = []
 
             # Check ron
             if self._can_ron(state, pid, tile):
-                ron_actions.append(Action(ActionType.RON, pid, tile=tile))
+                actions.append(Action(ActionType.RON, pid, tile=tile))
 
             if not ps.is_riichi:
                 base = normalize(tile)
@@ -563,46 +572,55 @@ class GameEngine:
 
                 # Check daiminkan (3 in hand + 1 from discard)
                 if hand_count >= 3 and state.kan_count < 4:
-                    kan_actions.append(Action(ActionType.KAN, pid, tile=tile))
+                    actions.append(Action(ActionType.KAN, pid, tile=tile))
 
                 # Check pon (2+ in hand)
                 if hand_count >= 2:
-                    pon_actions.append(Action(ActionType.PON, pid, tile=tile))
+                    actions.append(Action(ActionType.PON, pid, tile=tile))
 
                 # Check chi (only from left player / shimocha)
                 if pid == (discarder + 1) % 4:
                     chi_opts = self._get_chi_options(ps, tile)
                     for opt in chi_opts:
                         opt.player = pid
-                    chi_actions.extend(chi_opts)
+                    actions.extend(chi_opts)
 
-        # Priority resolution
-        all_calls = ron_actions + kan_actions + pon_actions + chi_actions
-        if not all_calls:
+            if actions:
+                actions_by_player[pid] = actions
+
+        if not actions_by_player:
             return None
 
-        # Ron is always asked first (highest priority, can be from any player)
-        for action in ron_actions:
-            available = [action, Action(ActionType.SKIP, action.player)]
-            choice = self.agents[action.player].choose_action(action.player, state, available)
+        # 2. First pass: ask all players who can ron (present ALL their options)
+        #    All ron decisions must resolve before accepting any pon/chi.
+        ron_players = [pid for pid, acts in actions_by_player.items()
+                       if any(a.type == ActionType.RON for a in acts)]
+        non_ron_choices: dict[int, Action] = {}
+
+        for pid in ron_players:
+            available = actions_by_player[pid] + [Action(ActionType.SKIP, pid)]
+            choice = self.agents[pid].choose_action(pid, state, available)
             if choice.type == ActionType.RON:
                 return choice
+            # Player declined ron but may have chosen pon/chi — save for priority resolution
+            if choice.type in (ActionType.PON, ActionType.CHI, ActionType.KAN):
+                non_ron_choices[pid] = choice
 
-        # Group remaining calls by player, present all options at once
-        # Priority: kan/pon > chi, but same player gets all options together
-        calls_by_player: dict[int, list[Action]] = {}
-        for a in kan_actions + pon_actions + chi_actions:
-            calls_by_player.setdefault(a.player, []).append(a)
-
-        # Ask players with kan/pon first (they have priority over chi-only players)
-        high_prio_players = {a.player for a in kan_actions + pon_actions}
-        chi_only_players = set(calls_by_player.keys()) - high_prio_players
-
-        for pid in list(high_prio_players) + list(chi_only_players):
-            actions = calls_by_player[pid]
-            available = actions + [Action(ActionType.SKIP, pid)]
+        # 3. Second pass: ask remaining players (pon/chi only, no ron option)
+        for pid in actions_by_player:
+            if pid in non_ron_choices or pid in ron_players:
+                continue
+            available = actions_by_player[pid] + [Action(ActionType.SKIP, pid)]
             choice = self.agents[pid].choose_action(pid, state, available)
             if choice.type in (ActionType.PON, ActionType.CHI, ActionType.KAN):
+                non_ron_choices[pid] = choice
+
+        # 4. Resolve priority across players: pon/kan > chi
+        for pid, choice in non_ron_choices.items():
+            if choice.type in (ActionType.PON, ActionType.KAN):
+                return choice
+        for pid, choice in non_ron_choices.items():
+            if choice.type == ActionType.CHI:
                 return choice
 
         return None
@@ -784,6 +802,15 @@ class GameEngine:
                 else:
                     state.score_deltas[i] = -pay_each
 
+        # Record tenpai players' hands for display
+        for i in range(4):
+            if tenpai[i]:
+                ps = state.players[i]
+                state.tenpai_hands[i] = {
+                    "hand": list(ps.hand),
+                    "melds": list(ps.melds),
+                }
+
     # -------------------------------------------------------------------
     # Win checking
     # -------------------------------------------------------------------
@@ -792,30 +819,33 @@ class GameEngine:
         """Check if player can declare tsumo."""
         ps = state.players[player_id]
         tiles = ps.closed_tiles
-        return self._is_complete_hand(tiles) and self._has_yaku_tsumo(state, player_id)
+        num_melds = len(ps.melds)
+        return self._is_complete_hand(tiles, num_melds) and self._has_yaku_tsumo(state, player_id)
 
     def _can_ron(self, state: RoundState, player_id: int, tile: str) -> bool:
         """Check if player can declare ron on a tile."""
         ps = state.players[player_id]
         test_hand = ps.hand + [tile]
-        if not self._is_complete_hand(test_hand):
+        num_melds = len(ps.melds)
+        if not self._is_complete_hand(test_hand, num_melds):
             return False
         # Furiten check
         if self._is_furiten(state, player_id):
             return False
         return True
 
-    def _is_complete_hand(self, tiles: list[str]) -> bool:
-        """Check if tiles form a complete winning hand (4 mentsu + 1 jantai or special)."""
+    def _is_complete_hand(self, tiles: list[str], num_melds: int = 0) -> bool:
+        """Check if tiles form a complete winning hand (mentsu + 1 jantai or special)."""
         if len(tiles) < 2:
             return False
 
         # Normalize for pattern checking
         normalized = [normalize(t) for t in tiles]
-        return self._check_regular_win(normalized) or self._check_seven_pairs(normalized)
+        needed_mentsu = 4 - num_melds
+        return self._check_regular_win(normalized, needed_mentsu) or (num_melds == 0 and self._check_seven_pairs(normalized))
 
-    def _check_regular_win(self, tiles: list[str]) -> bool:
-        """Check for standard 4-mentsu + 1-jantai pattern."""
+    def _check_regular_win(self, tiles: list[str], needed_mentsu: int = 4) -> bool:
+        """Check for standard mentsu + jantai pattern."""
         from collections import Counter
         counts = Counter(tiles)
 
@@ -827,7 +857,7 @@ class GameEngine:
             remaining[pair_tile] -= 2
             if remaining[pair_tile] == 0:
                 del remaining[pair_tile]
-            if self._extract_mentsu(remaining, 4):
+            if self._extract_mentsu(remaining, needed_mentsu):
                 return True
         return False
 
@@ -884,20 +914,22 @@ class GameEngine:
         """Check if player is tenpai (one tile away from winning)."""
         ps = state.players[player_id]
         tiles = list(ps.hand)
+        num_melds = len(ps.melds)
         from game.tiles import ALL_TILE_FACES
         for test_tile in ALL_TILE_FACES:
-            if self._is_complete_hand(tiles + [test_tile]):
+            if self._is_complete_hand(tiles + [test_tile], num_melds):
                 return True
         return False
 
     def _is_furiten(self, state: RoundState, player_id: int) -> bool:
         """Check if player is in furiten."""
         ps = state.players[player_id]
+        num_melds = len(ps.melds)
         # Check own discards for winning tiles
         from game.tiles import ALL_TILE_FACES
         waits = []
         for test_tile in ALL_TILE_FACES:
-            if self._is_complete_hand(ps.hand + [test_tile]):
+            if self._is_complete_hand(ps.hand + [test_tile], num_melds):
                 waits.append(normalize(test_tile))
 
         for d in ps.discards:

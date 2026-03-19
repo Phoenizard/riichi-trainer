@@ -156,8 +156,10 @@ def tiles_to_136(tiles: list[str]) -> list[int]:
         if is_red(tile):
             idx_136 = face_idx * 4  # red five always gets index 0
         else:
-            # Find next available copy index, skipping 0 if reserved for red
-            start = 1 if base in has_red else 0
+            # Skip index 0 for fives — the mahjong library treats
+            # face*4+0 as aka dora regardless of actual red five presence
+            is_five = base in ('5m', '5p', '5s')
+            start = 1 if (is_five or base in has_red) else 0
             face_used = used.get(base, [])
             copy = start
             while face_idx * 4 + copy in face_used:

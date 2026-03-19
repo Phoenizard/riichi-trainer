@@ -74,8 +74,9 @@ interface RoundResultModalProps {
 }
 
 const RoundResultModal: React.FC<RoundResultModalProps> = ({ result, onContinue }) => {
-  const { winner, han, fu, yaku, score_deltas, scores, winning_hand, winning_melds } = result;
+  const { winner, han, fu, yaku, score_deltas, scores, winning_hand, winning_melds, tenpai_hands } = result;
   const resultLabel = RESULT_LABELS[result.result] || result.result;
+  const isDraw = result.result.startsWith('draw');
 
   return (
     <div className="modal-overlay">
@@ -112,6 +113,29 @@ const RoundResultModal: React.FC<RoundResultModalProps> = ({ result, onContinue 
           </div>
         )}
 
+        {/* Tenpai hands on draw */}
+        {isDraw && tenpai_hands && Object.keys(tenpai_hands).length > 0 && (
+          <div className="tenpai-section">
+            <div className="tenpai-title">听牌</div>
+            {[0, 1, 2, 3].filter(i => tenpai_hands[String(i)]).map(i => {
+              const data = tenpai_hands[String(i)];
+              return (
+                <div key={i} className="tenpai-player">
+                  <div className="tenpai-player-name">{SEAT_NAMES[i]}</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2, alignItems: 'flex-end' }}>
+                    {data.hand.map((tile, j) => (
+                      <Tile key={j} tile={tile} small />
+                    ))}
+                  </div>
+                  {data.melds && data.melds.length > 0 && (
+                    <MeldDisplay melds={data.melds} small ownerSeat={i} />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         <div className="modal-scores">
           {score_deltas.map((delta, i) => {
             const sign = delta >= 0 ? '+' : '';
@@ -125,6 +149,13 @@ const RoundResultModal: React.FC<RoundResultModalProps> = ({ result, onContinue 
             );
           })}
         </div>
+
+        {result.round_stats && result.round_stats.total > 0 && (
+          <div className="modal-stats">
+            AI 一致率: {result.round_stats.matches}/{result.round_stats.total}
+            ({Math.round(result.round_stats.agreement_rate * 100)}%)
+          </div>
+        )}
 
         <button className="modal-btn" onClick={onContinue}>
           続行

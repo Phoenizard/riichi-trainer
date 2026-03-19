@@ -4,6 +4,8 @@ import DiscardPond from './DiscardPond';
 import MeldDisplay from './MeldDisplay';
 import type { GameInfo } from '../types/game';
 
+const WIND_LABELS: Record<string, string> = { E: '東', S: '南', W: '西', N: '北' };
+
 interface TableAreaProps {
   gameInfo: GameInfo;
   aiThinking: boolean;
@@ -39,7 +41,7 @@ const TableArea: React.FC<TableAreaProps> = ({ gameInfo, aiThinking }) => {
       <div className="table-bottom">
         <div className={`opponent-area${current_turn === 0 ? ' opponent-active' : ''}`}>
           <div className="opponent-header">
-            <span>{self.seat_wind} 自家</span>
+            <span>{WIND_LABELS[self.seat_wind] || self.seat_wind} 自家</span>
             <span>{scores[0]}点</span>
             {self.is_riichi && <span style={{ color: 'var(--riichi)' }}>⚡立直</span>}
           </div>

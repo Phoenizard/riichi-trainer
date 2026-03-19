@@ -52,6 +52,11 @@ export interface EfficiencyRow {
   remaining: number;
 }
 
+export interface TenpaiHandData {
+  hand: string[];
+  melds: MeldView[];
+}
+
 export interface RoundResultData {
   result: string;
   winner: number;
@@ -63,6 +68,8 @@ export interface RoundResultData {
   scores: number[];
   winning_hand?: string[];
   winning_melds?: MeldView[];
+  tenpai_hands?: Record<string, TenpaiHandData>;
+  round_stats?: { total: number; matches: number; agreement_rate: number };
 }
 
 export interface GameState {

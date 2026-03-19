@@ -1,8 +1,8 @@
 """
-WebAgent — bridges async WebSocket ↔ sync GameEngine.
+WebAgent — bridges async WebSocket I/O to the synchronous GameEngine.
 
-Implements the Agent protocol (choose_action + on_event).
-Engine thread blocks on threading.Event; WebSocket handler signals it.
+The GameEngine calls choose_action() on its thread; WebAgent blocks that
+thread until the frontend sends a response via the WebSocket handler.
 """
 
 from __future__ import annotations
@@ -13,28 +13,33 @@ import threading
 import time
 from typing import Optional
 
-from game.engine import Action, ActionType, RoundState
-from game.efficiency import calculate_efficiency, calculate_shanten
+from game.engine import RoundState, Action, ActionType, MeldType, GameEngine
 from game.tiles import sort_tiles
+from game.efficiency import calculate_efficiency, calculate_shanten
 
 logger = logging.getLogger(__name__)
 
 
 class GameInterrupted(Exception):
-    """Raised when the game is interrupted (disconnect / shutdown)."""
+    """Raised when game is interrupted (e.g., client disconnect)."""
     pass
 
 
 class WebAgent:
-    """Bridges async WebSocket ↔ sync GameEngine via threading primitives."""
+    """Agent that bridges WebSocket I/O to the synchronous engine thread."""
 
-    def __init__(self, ai_delay: float = 1.2):
-        self._action_event = threading.Event()
-        self._chosen_action: Optional[Action] = None
+    def __init__(self, engine: Optional[GameEngine] = None,
+                 coach=None, ai_delay: float = 0.8):
+        self._engine_ref = engine
+        self._coach = coach
         self._pending_actions: Optional[list[Action]] = None
+        self._chosen_action: Optional[Action] = None
+        self._action_event = threading.Event()
         self._shutdown = threading.Event()
-        self._coach = None  # Optional MortalAgent for coaching
-        self._engine_ref = None  # Set by GameSession after engine creation
+        self._logger = None
+        self._current_round_id: Optional[str] = None
+        self._turn_number: int = 0
+        self._last_coach_analysis = None  # Cache for logging
         self.ws_send_queue: queue.Queue = queue.Queue()
         self.ai_delay = ai_delay  # seconds to pause between AI actions
 
@@ -48,11 +53,28 @@ class WebAgent:
         # Send current game state so frontend can render the table
         self.ws_send_queue.put(serialize_game_info(game_state, self._engine_ref))
 
+        ps = game_state.players[player_id]
+
+        # Riichi auto-discard: only tsumogiri available — show draw tile briefly, then auto-respond
+        if len(available_actions) == 1 and available_actions[0].type == ActionType.DISCARD:
+            msg: dict = {
+                "type": "action_required",
+                "available_actions": [],
+                "hand": sort_tiles(ps.hand),
+                "draw_tile": ps.draw_tile,
+            }
+            self.ws_send_queue.put(msg)
+            time.sleep(max(self.ai_delay, 1.0))
+            self._chosen_action = available_actions[0]
+            return self._chosen_action
+
         # Coach analysis — already computed by on_event(), just read it
+        self._last_coach_analysis = None
         if self._coach:
             try:
                 analysis = self._coach.get_analysis()
                 if analysis:
+                    self._last_coach_analysis = analysis
                     self.ws_send_queue.put({
                         "type": "coach",
                         "analysis": {
@@ -65,8 +87,12 @@ class WebAgent:
             except Exception as e:
                 logger.warning(f"Coach analysis error: {e}")
 
+        # If tsumo is available, add a skip option so player can decline
+        has_tsumo = any(a.type == ActionType.TSUMO for a in available_actions)
+        if has_tsumo and not any(a.type == ActionType.SKIP for a in available_actions):
+            available_actions = list(available_actions) + [Action(ActionType.SKIP, player_id)]
+
         # Compute tile efficiency (only when player has discard actions)
-        ps = game_state.players[player_id]
         efficiency_data = None
         has_discard = any(a.type == ActionType.DISCARD for a in available_actions)
         if has_discard:
@@ -75,7 +101,7 @@ class WebAgent:
                 visible.extend(p.discards)
                 for m in p.melds:
                     visible.extend(m.tiles)
-            visible.extend(game_state.dora_indicators)
+                visible.extend(game_state.dora_indicators)
 
             full_hand = list(ps.hand) + ([ps.draw_tile] if ps.draw_tile else [])
             rows = calculate_efficiency(full_hand, visible)
@@ -90,7 +116,7 @@ class WebAgent:
             ]
 
         # Send action_required to frontend
-        msg: dict = {
+        msg = {
             "type": "action_required",
             "available_actions": serialize_actions(available_actions),
             "hand": sort_tiles(ps.hand),
@@ -113,6 +139,40 @@ class WebAgent:
         if self._chosen_action is None:
             raise GameInterrupted("No action received (timeout)")
 
+        # Log decision to database
+        if self._logger and self._current_round_id:
+            try:
+                chosen = self._chosen_action
+                coach = self._last_coach_analysis
+                # Determine what AI recommended
+                ai_rec = coach.recommended_tile if coach else None
+                ai_action = coach.recommended_action if coach else None
+                shanten = coach.shanten if coach else None
+                # Determine match
+                is_match = False
+                if coach:
+                    if ai_action == "dahai" and chosen.type == ActionType.DISCARD:
+                        is_match = chosen.tile == ai_rec
+                    elif ai_action == "none" and chosen.type.value == "skip":
+                        is_match = True
+                    elif ai_action in ("pon", "chi", "hora", "reach") and chosen.type.value == ai_action:
+                        is_match = True
+
+                self._logger.log_decision(
+                    round_id=self._current_round_id,
+                    turn_number=self._turn_number,
+                    action_type=chosen.type.value,
+                    player_action=chosen.tile or chosen.type.value,
+                    ai_recommendation=ai_rec or (ai_action if ai_action else None),
+                    ai_action_type=ai_action,
+                    match=is_match,
+                    shanten=shanten,
+                    hand=sort_tiles(ps.hand),
+                )
+                self._turn_number += 1
+            except Exception as e:
+                logger.warning(f"Decision logging error: {e}")
+
         return self._chosen_action
 
     def receive_player_action(self, action_data: dict) -> None:
@@ -126,29 +186,50 @@ class WebAgent:
 
     def on_event(self, event: dict) -> None:
         """Receive game event from engine — forward to WS and coach."""
-        # Pause on AI player actions so human can follow the game
         etype = event.get("type")
+
+        # Reset turn counter on new round
+        if etype == "start_round":
+            self._turn_number = 0
+
+        # Pause on AI player actions so human can follow the game
         player = event.get("player")
         if player is not None and player != 0 and etype in (
             "discard", "pon", "chi", "kan", "riichi", "reach", "reach_accepted",
             "tsumo", "ron",
         ):
+            import time
             time.sleep(self.ai_delay)
 
+        # Forward to frontend
         self.ws_send_queue.put({"type": "game_event", "event": event})
+
+        # Feed event to coach for next analysis
         if self._coach:
             try:
                 self._coach.on_event(event)
             except Exception as e:
-                logger.warning(f"Coach on_event error: {e}")
+                logger.warning(f"Coach event error: {e}")
+
+    def shutdown(self):
+        self._shutdown.set()
+        self._action_event.set()
 
 
 # ---------------------------------------------------------------------------
-# Serialization helpers
+# Serialisation helpers
 # ---------------------------------------------------------------------------
+
+def serialize_meld(m) -> dict:
+    return {
+        "type": m.type.value,
+        "tiles": m.tiles,
+        "from_player": m.from_player,
+        "called_tile": m.called_tile,
+    }
+
 
 def serialize_actions(actions: list[Action]) -> list[dict]:
-    """Serialize engine Action objects to JSON-friendly dicts."""
     result = []
     for a in actions:
         d: dict = {"type": a.type.value}
@@ -160,89 +241,63 @@ def serialize_actions(actions: list[Action]) -> list[dict]:
     return result
 
 
-def serialize_meld(meld) -> dict:
-    """Serialize a Meld object."""
-    return {
-        "type": meld.type.value,
-        "tiles": meld.tiles,
-        "from_player": meld.from_player,
-        "called_tile": meld.called_tile,
-    }
-
-
-WIND_KANJI = {0: "東", 1: "南", 2: "西", 3: "北"}
-WIND_FROM_STR = {"E": "東", "S": "南", "W": "西", "N": "北"}
-
-
-def serialize_player(ps, seat: int, dealer: int, is_self: bool = False) -> dict:
-    """Serialize PlayerState for WS, applying visibility rules."""
-    seat_wind_idx = (seat - dealer) % 4
-    d = {
-        "discards": ps.discards,
-        "melds": [serialize_meld(m) for m in ps.melds],
-        "is_riichi": ps.is_riichi,
-        "riichi_turn": ps.riichi_turn,
-        "hand_count": len(ps.hand) + (1 if ps.draw_tile else 0),
-        "seat_wind": WIND_KANJI.get(seat_wind_idx, ""),
-    }
-    # Always include hand (single-player trainer, no security concern)
-    d["hand"] = sort_tiles(ps.hand)
-    d["draw_tile"] = ps.draw_tile
-    return d
-
-
-def serialize_game_info(state: RoundState, engine=None) -> dict:
-    """Serialize round/game info for the game_info WS message."""
-    scores = list(engine.game_scores) if engine else list(state.scores)
-    return {
+def serialize_game_info(state: RoundState, engine: Optional[GameEngine]) -> dict:
+    """Build game_info message from current RoundState."""
+    d: dict = {
         "type": "game_info",
-        "round_wind": WIND_FROM_STR.get(state.round_wind, state.round_wind),
+        "round_wind": state.round_wind,
         "round_number": state.round_number,
         "honba": state.honba,
-        "riichi_sticks": state.riichi_sticks,
-        "scores": scores,
+        "riichi_sticks": engine.riichi_sticks if engine else 0,
+        "scores": list(engine.game_scores) if engine else [25000] * 4,
         "dora_indicators": state.dora_indicators,
         "tiles_remaining": state.tiles_remaining,
         "dealer": state.dealer,
         "current_turn": state.current_turn,
-        "players": [
-            serialize_player(state.players[i], i, state.dealer, is_self=(i == 0))
-            for i in range(4)
-        ],
+        "players": [],
     }
+    seat_winds = ["E", "S", "W", "N"]
+    for i, ps in enumerate(state.players):
+        wind_offset = (i - state.dealer) % 4
+        p: dict = {
+            "discards": ps.discards,
+            "melds": [serialize_meld(m) for m in ps.melds],
+            "is_riichi": ps.is_riichi,
+            "riichi_turn": ps.riichi_turn,
+            "hand_count": len(ps.hand) + (1 if ps.draw_tile else 0),
+            "seat_wind": seat_winds[wind_offset],
+        }
+        if i == 0:
+            p["hand"] = sort_tiles(ps.hand)
+            p["draw_tile"] = ps.draw_tile
+        d["players"].append(p)
+    d["hand"] = sort_tiles(state.players[0].hand)
+    d["draw_tile"] = state.players[0].draw_tile
+    return d
 
 
-def parse_ws_action(action_data: dict, available_actions: list[Action]) -> Action:
-    """Parse a WS action message and match to an available engine Action."""
-    action_type = action_data.get("action_type", "")
-    tile = action_data.get("tile", "")
-    meld_tiles = action_data.get("meld_tiles", [])
+def parse_ws_action(data: dict, available: list[Action]) -> Action:
+    """Match a WebSocket action message to an available engine Action."""
+    action_type = data.get("action_type", "")
+    tile = data.get("tile")
 
-    # Try exact match first
-    for a in available_actions:
-        if a.type.value != action_type:
-            continue
-        # For discard/riichi: match tile
-        if action_type in ("discard", "riichi"):
-            if a.tile == tile:
-                return a
-        # For chi: match meld_tiles
-        elif action_type == "chi":
-            if sorted(a.meld_tiles) == sorted(meld_tiles) and a.tile == tile:
-                return a
-        # For pon/kan: match tile
-        elif action_type in ("pon", "kan"):
-            if a.tile == tile:
-                return a
-        # For tsumo/ron/skip: no tile needed
-        elif action_type in ("tsumo", "ron", "skip", "kyuushu"):
-            return a
-
-    # Fallback: find any action of the same type
-    for a in available_actions:
+    for a in available:
         if a.type.value == action_type:
-            return a
+            if a.type == ActionType.DISCARD:
+                if a.tile == tile:
+                    return a
+            elif a.type == ActionType.CHI:
+                req_meld = data.get("meld_tiles")
+                if req_meld and sorted(req_meld) == sorted(a.meld_tiles):
+                    return a
+            elif a.type == ActionType.RIICHI:
+                if a.tile == tile:
+                    return a
+            else:
+                return a
 
-    # Last resort: first available
-    logger.warning(f"Could not match action {action_data}, using first available")
-    return available_actions[0]
+    # Fallback: skip or first available
+    for a in available:
+        if a.type == ActionType.SKIP:
+            return a
+    return available[0]

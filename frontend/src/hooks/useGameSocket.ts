@@ -1,6 +1,32 @@
 import { useReducer, useCallback, useRef, useEffect } from 'react';
 import type { GameState, ServerMessage, ClientMessage, GameInfo, EfficiencyRow } from '../types/game';
 
+// Tile sort order: 1m-9m, 1p-9p, 1s-9s, E/S/W/N, P/F/C
+const TILE_ORDER: Record<string, number> = {};
+['m', 'p', 's'].forEach((suit, si) => {
+  for (let n = 1; n <= 9; n++) {
+    TILE_ORDER[`${n}${suit}`] = si * 9 + n - 1;
+  }
+});
+['E', 'S', 'W', 'N', 'P', 'F', 'C'].forEach((t, i) => {
+  TILE_ORDER[t] = 27 + i;
+});
+
+function sortTiles(tiles: string[]): string[] {
+  return [...tiles].sort((a, b) => {
+    // Normalize red fives (0m→5m etc.) for ordering
+    const na = a.startsWith('0') ? '5' + a[1] : a;
+    const nb = b.startsWith('0') ? '5' + b[1] : b;
+    const ia = TILE_ORDER[na] ?? 999;
+    const ib = TILE_ORDER[nb] ?? 999;
+    if (ia !== ib) return ia - ib;
+    // Red fives sort before regular fives
+    const ra = a.startsWith('0') ? 0 : 1;
+    const rb = b.startsWith('0') ? 0 : 1;
+    return ra - rb;
+  });
+}
+
 const initialState: GameState = {
   phase: 'lobby',
   gameInfo: null,
@@ -50,9 +76,12 @@ function gameReducer(state: GameState, action: GameAction): GameState {
       if (etype === 'discard' && player >= 0 && player < 4) {
         players[player].discards.push(event.tile as string);
         if (player === 0) {
-          // Remove tile from hand
+          // Merge draw tile into hand, then remove the discarded tile
           const tile = event.tile as string;
           const newHand = [...state.hand];
+          if (state.drawTile) {
+            newHand.push(state.drawTile);
+          }
           const idx = newHand.indexOf(tile);
           if (idx >= 0) {
             newHand.splice(idx, 1);
@@ -60,7 +89,7 @@ function gameReducer(state: GameState, action: GameAction): GameState {
           return {
             ...state,
             gameInfo: { ...info, players, current_turn: (player + 1) % 4 },
-            hand: newHand,
+            hand: sortTiles(newHand),
             drawTile: null,
             availableActions: null,
             coach: null,

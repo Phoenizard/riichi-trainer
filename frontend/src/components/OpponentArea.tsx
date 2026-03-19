@@ -5,6 +5,7 @@ import MeldDisplay from './MeldDisplay';
 import type { PlayerView } from '../types/game';
 
 const SEAT_NAMES = ['自家', '下家', '対面', '上家'];
+const WIND_LABELS: Record<string, string> = { E: '東', S: '南', W: '西', N: '北' };
 
 interface OpponentAreaProps {
   player: PlayerView;
@@ -19,7 +20,7 @@ const OpponentArea: React.FC<OpponentAreaProps> = ({ player, seat, score, isActi
   return (
     <div className={`opponent-area${isActive ? ' opponent-active' : ''}`}>
       <div className="opponent-header">
-        <span>{player.seat_wind} {SEAT_NAMES[seat]}</span>
+        <span>{WIND_LABELS[player.seat_wind] || player.seat_wind} {SEAT_NAMES[seat]}</span>
         <span>{score}点</span>
         {player.is_riichi && <span style={{ color: 'var(--riichi)' }}>⚡立直</span>}
         <button
