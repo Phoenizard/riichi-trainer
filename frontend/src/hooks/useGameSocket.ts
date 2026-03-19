@@ -1,5 +1,5 @@
 import { useReducer, useCallback, useRef, useEffect } from 'react';
-import type { GameState, ServerMessage, ClientMessage, GameInfo } from '../types/game';
+import type { GameState, ServerMessage, ClientMessage, GameInfo, EfficiencyRow } from '../types/game';
 
 const initialState: GameState = {
   phase: 'lobby',
@@ -8,6 +8,8 @@ const initialState: GameState = {
   drawTile: null,
   availableActions: null,
   coach: null,
+  efficiency: null,
+  efficiencyShanten: null,
   roundResult: null,
   finalScores: null,
   aiThinking: false,
@@ -16,7 +18,7 @@ const initialState: GameState = {
 type GameAction =
   | { type: 'GAME_INFO'; payload: GameInfo }
   | { type: 'GAME_EVENT'; payload: Record<string, unknown> }
-  | { type: 'ACTION_REQUIRED'; payload: { available_actions: any[]; hand: string[]; draw_tile: string | null } }
+  | { type: 'ACTION_REQUIRED'; payload: { available_actions: any[]; hand: string[]; draw_tile: string | null; efficiency?: EfficiencyRow[]; shanten?: number | null } }
   | { type: 'COACH'; payload: any }
   | { type: 'ROUND_RESULT'; payload: any }
   | { type: 'GAME_OVER'; payload: { scores: number[] } }
@@ -62,6 +64,8 @@ function gameReducer(state: GameState, action: GameAction): GameState {
             drawTile: null,
             availableActions: null,
             coach: null,
+            efficiency: null,
+            efficiencyShanten: null,
           };
         }
         // AI discard — advance current_turn
@@ -142,6 +146,8 @@ function gameReducer(state: GameState, action: GameAction): GameState {
         hand: action.payload.hand,
         drawTile: action.payload.draw_tile,
         availableActions: action.payload.available_actions,
+        efficiency: action.payload.efficiency || null,
+        efficiencyShanten: action.payload.shanten ?? null,
         aiThinking: false,
       };
     case 'COACH':
@@ -153,6 +159,8 @@ function gameReducer(state: GameState, action: GameAction): GameState {
         roundResult: action.payload,
         availableActions: null,
         coach: null,
+        efficiency: null,
+        efficiencyShanten: null,
         aiThinking: false,
       };
     case 'GAME_OVER':
@@ -162,6 +170,8 @@ function gameReducer(state: GameState, action: GameAction): GameState {
         finalScores: action.payload.scores,
         availableActions: null,
         coach: null,
+        efficiency: null,
+        efficiencyShanten: null,
         aiThinking: false,
       };
     case 'AI_THINKING':
@@ -206,6 +216,8 @@ export function useGameSocket() {
               available_actions: msg.available_actions,
               hand: msg.hand,
               draw_tile: msg.draw_tile,
+              efficiency: (msg as any).efficiency,
+              shanten: (msg as any).shanten,
             },
           });
           break;
@@ -257,7 +269,7 @@ export function useGameSocket() {
       };
       send(msg);
       // Clear available actions immediately for responsiveness
-      dispatch({ type: 'ACTION_REQUIRED', payload: { available_actions: [], hand: state.hand, draw_tile: state.drawTile } });
+      dispatch({ type: 'ACTION_REQUIRED', payload: { available_actions: [], hand: state.hand, draw_tile: state.drawTile, efficiency: undefined, shanten: null } });
     },
     [send, state.hand, state.drawTile]
   );

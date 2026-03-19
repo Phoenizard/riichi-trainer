@@ -14,6 +14,7 @@ import time
 from typing import Optional
 
 from game.engine import Action, ActionType, RoundState
+from game.efficiency import calculate_efficiency, calculate_shanten
 from game.tiles import sort_tiles
 
 logger = logging.getLogger(__name__)
@@ -64,14 +65,42 @@ class WebAgent:
             except Exception as e:
                 logger.warning(f"Coach analysis error: {e}")
 
-        # Send action_required to frontend
+        # Compute tile efficiency (only when player has discard actions)
         ps = game_state.players[player_id]
-        self.ws_send_queue.put({
+        efficiency_data = None
+        has_discard = any(a.type == ActionType.DISCARD for a in available_actions)
+        if has_discard:
+            visible: list[str] = []
+            for p in game_state.players:
+                visible.extend(p.discards)
+                for m in p.melds:
+                    visible.extend(m.tiles)
+            visible.extend(game_state.dora_indicators)
+
+            full_hand = list(ps.hand) + ([ps.draw_tile] if ps.draw_tile else [])
+            rows = calculate_efficiency(full_hand, visible)
+            efficiency_data = [
+                {
+                    "discard": r.discard,
+                    "accepts": r.accepts,
+                    "total": r.total,
+                    "remaining": r.remaining,
+                }
+                for r in rows
+            ]
+
+        # Send action_required to frontend
+        msg: dict = {
             "type": "action_required",
             "available_actions": serialize_actions(available_actions),
             "hand": sort_tiles(ps.hand),
             "draw_tile": ps.draw_tile,
-        })
+        }
+        if efficiency_data is not None:
+            full_hand = list(ps.hand) + ([ps.draw_tile] if ps.draw_tile else [])
+            msg["efficiency"] = efficiency_data
+            msg["shanten"] = calculate_shanten(full_hand[:-1]) if len(full_hand) >= 14 else None
+        self.ws_send_queue.put(msg)
 
         # Block until player responds via WebSocket
         self._pending_actions = available_actions

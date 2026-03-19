@@ -45,6 +45,13 @@ export interface CoachAnalysis {
   candidates: { tile: string; score: number; rank: number }[];
 }
 
+export interface EfficiencyRow {
+  discard: string;
+  accepts: string[];
+  total: number;
+  remaining: number;
+}
+
 export interface RoundResultData {
   result: string;
   winner: number;
@@ -65,6 +72,8 @@ export interface GameState {
   drawTile: string | null;
   availableActions: ActionOption[] | null;
   coach: CoachAnalysis | null;
+  efficiency: EfficiencyRow[] | null;
+  efficiencyShanten: number | null;
   roundResult: RoundResultData | null;
   finalScores: number[] | null;
   aiThinking: boolean;
@@ -74,7 +83,7 @@ export interface GameState {
 export type ServerMessage =
   | { type: 'game_info' } & GameInfo
   | { type: 'game_event'; event: Record<string, unknown> }
-  | { type: 'action_required'; available_actions: ActionOption[]; hand: string[]; draw_tile: string | null }
+  | { type: 'action_required'; available_actions: ActionOption[]; hand: string[]; draw_tile: string | null; efficiency?: EfficiencyRow[]; shanten?: number | null }
   | { type: 'coach'; analysis: CoachAnalysis }
   | { type: 'round_result' } & RoundResultData
   | { type: 'game_over'; scores: number[] }

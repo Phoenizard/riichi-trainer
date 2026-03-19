@@ -535,3 +535,131 @@ body {
   color: #666;
   margin-right: 4px;
 }
+
+/* Tile efficiency panel */
+.efficiency-panel {
+  background: var(--card-bg);
+  border-top: 2px solid #8e44ad;
+}
+
+.efficiency-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  color: #8e44ad;
+}
+
+.efficiency-shanten-badge {
+  background: #27ae60;
+  color: #fff;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.efficiency-body {
+  padding: 0 16px 12px;
+}
+
+.efficiency-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.efficiency-table thead th {
+  padding: 6px 8px;
+  font-weight: 600;
+  font-size: 12px;
+  color: #888;
+  border-bottom: 2px solid #eee;
+}
+
+.efficiency-table tbody tr {
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.efficiency-best {
+  background: #f8f4ff;
+}
+
+.efficiency-discard-cell {
+  padding: 8px;
+  vertical-align: middle;
+}
+
+.efficiency-accepts-cell {
+  padding: 8px;
+  vertical-align: middle;
+}
+
+.efficiency-accepts {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.efficiency-total {
+  padding: 8px;
+  text-align: right;
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.efficiency-best .efficiency-total {
+  color: #8e44ad;
+}
+
+.efficiency-remaining {
+  padding: 8px;
+  text-align: right;
+  font-weight: 600;
+  font-size: 14px;
+  color: #27ae60;
+}
+
+.efficiency-low {
+  color: #e67e22;
+}
+
+.efficiency-legend {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #999;
+  display: flex;
+  gap: 16px;
+}
+
+.efficiency-empty {
+  padding: 8px 0;
+  color: #999;
+  font-size: 13px;
+}
+
+/* Mini tiles (for efficiency accepts) */
+.tile-mini {
+  width: 24px;
+  height: 34px;
+  font-size: 10px;
+  border-radius: 3px;
+}
+.tile-mini .tile-number {
+  font-size: 11px;
+}
+.tile-mini .tile-suit {
+  font-size: 8px;
+}
+.tile-mini .tile-honor {
+  font-size: 12px;
+}
+.tile-mini.tile-red::after {
+  width: 3px;
+  height: 3px;
+  top: 1px;
+  right: 1px;
+}

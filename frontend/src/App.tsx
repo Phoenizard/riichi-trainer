@@ -5,6 +5,7 @@ import TableArea from './components/TableArea';
 import HandArea from './components/HandArea';
 import ActionBar from './components/ActionBar';
 import CoachPanel from './components/CoachPanel';
+import EfficiencyPanel from './components/EfficiencyPanel';
 import RoundResultModal from './components/RoundResultModal';
 import GameEndOverlay from './components/GameEndOverlay';
 import './styles/tiles.css';
@@ -72,6 +73,12 @@ function App() {
         coach={state.coach}
         visible={showCoach}
         onToggle={toggleCoach}
+      />
+
+      {/* Tile efficiency panel */}
+      <EfficiencyPanel
+        efficiency={state.efficiency}
+        shanten={state.efficiencyShanten ?? state.coach?.shanten ?? null}
       />
 
       {/* Round result modal */}

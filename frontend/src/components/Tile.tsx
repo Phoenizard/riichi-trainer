@@ -28,13 +28,14 @@ interface TileProps {
   recommended?: boolean;
   faceDown?: boolean;
   small?: boolean;
+  mini?: boolean;
   sideways?: boolean;
 }
 
-const Tile: React.FC<TileProps> = ({ tile, onClick, clickable, recommended, faceDown, small, sideways }) => {
+const Tile: React.FC<TileProps> = ({ tile, onClick, clickable, recommended, faceDown, small, mini, sideways }) => {
   if (faceDown) {
     return (
-      <div className={`tile tile-back ${small ? 'tile-small' : ''} ${sideways ? 'tile-sideways' : ''}`} />
+      <div className={`tile tile-back ${small ? 'tile-small' : ''} ${mini ? 'tile-mini' : ''} ${sideways ? 'tile-sideways' : ''}`} />
     );
   }
 
@@ -47,6 +48,7 @@ const Tile: React.FC<TileProps> = ({ tile, onClick, clickable, recommended, face
     clickable && 'tile-clickable',
     recommended && 'tile-recommended',
     small && 'tile-small',
+    mini && 'tile-mini',
     sideways && 'tile-sideways',
   ].filter(Boolean).join(' ');
 
