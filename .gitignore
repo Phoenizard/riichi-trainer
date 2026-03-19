@@ -40,6 +40,8 @@ Thumbs.db
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 
 # tmp files
 tmp/
