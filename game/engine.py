@@ -200,6 +200,7 @@ class GameEngine:
         self.game_log: list[list[dict]] = []  # all rounds
         self._last_action_was_kan = False  # for rinshan kaihou detection
         self.round_callback = None  # optional: called with (RoundState) after each round
+        self._current_state: Optional[RoundState] = None  # live round state for external access
 
     @property
     def dealer(self) -> int:
@@ -261,6 +262,7 @@ class GameEngine:
     def play_round(self) -> RoundState:
         """Play a single round (kyoku). Returns the round state with results."""
         state = self._init_round()
+        self._current_state = state
         self.round_log = []
 
         # Emit start events

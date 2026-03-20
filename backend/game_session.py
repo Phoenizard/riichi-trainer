@@ -16,6 +16,7 @@ from game.engine import GameEngine, RoundState
 from ai.mock_agent import MockAgent
 from backend.db import GameLogger
 from backend.web_agent import WebAgent, GameInterrupted, serialize_game_info, serialize_meld
+from backend.llm_coach import LLMCoach, build_game_context, is_available as llm_available
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,9 @@ class GameSession:
         else:
             self.ai_agents = [MockAgent(f"AI-{i}") for i in range(1, 4)]
             logger.info("Using MockAgent (heuristic fallback)")
+
+        # LLM Coach (chat sidebar)
+        self.llm_coach = LLMCoach() if llm_available() else None
 
     def start(self) -> None:
         """Start the game in a background thread."""
@@ -137,6 +141,11 @@ class GameSession:
                 "melds": [serialize_meld(m) for m in data["melds"]],
             }
 
+        # Clear LLM chat history for new round
+        if self.llm_coach:
+            self.llm_coach.clear_history()
+        self.web_agent.ws_send_queue.put({"type": "chat_clear"})
+
         # Send round result
         msg = {
             "type": "round_result",
@@ -160,6 +169,49 @@ class GameSession:
         # Same pattern as terminal UI's input("Enter で続行...")
         self._round_continue.clear()
         self._round_continue.wait(timeout=120)
+
+    def handle_chat_message(self, content: str) -> None:
+        """Handle a chat message from the user — stream LLM reply."""
+        if not self.llm_coach or not self.llm_coach.available:
+            self.web_agent.ws_send_queue.put({
+                "type": "chat_reply_chunk",
+                "content": "未配置 API Key，无法使用 AI 教练。",
+                "done": True,
+            })
+            return
+
+        import threading
+
+        def _stream():
+            game_ctx = self.web_agent.get_game_context()
+            context_str = build_game_context(game_ctx)
+            turn_num = self.web_agent._turn_number
+            round_id = self.web_agent._current_round_id
+
+            # Log user message
+            if round_id:
+                self.logger.log_chat(round_id, turn_num, "user", content, context_str)
+
+            full_reply = []
+            for chunk in self.llm_coach.stream_reply(content, context_str):
+                full_reply.append(chunk)
+                self.web_agent.ws_send_queue.put({
+                    "type": "chat_reply_chunk",
+                    "content": chunk,
+                    "done": False,
+                })
+            self.web_agent.ws_send_queue.put({
+                "type": "chat_reply_chunk",
+                "content": "",
+                "done": True,
+            })
+
+            # Log assistant reply
+            if round_id:
+                self.logger.log_chat(round_id, turn_num, "assistant", "".join(full_reply))
+
+        # Run in separate thread to avoid blocking WebSocket handler
+        threading.Thread(target=_stream, daemon=True).start()
 
     def continue_round(self) -> None:
         """Unblock the engine thread after round result is acknowledged."""

@@ -41,6 +41,16 @@ CREATE TABLE IF NOT EXISTS rounds (
     score_deltas TEXT
 );
 
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    round_id TEXT NOT NULL REFERENCES rounds(id),
+    turn_number INTEGER,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    game_context TEXT,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     round_id TEXT NOT NULL REFERENCES rounds(id),
@@ -138,6 +148,30 @@ class GameLogger:
                 1 if match else 0,
                 shanten,
                 json.dumps(hand) if hand else None,
+            ),
+        )
+        self._conn.commit()
+
+    def log_chat(
+        self,
+        round_id: str,
+        turn_number: int,
+        role: str,
+        content: str,
+        game_context: Optional[str] = None,
+    ) -> None:
+        """Log a chat message (user or assistant)."""
+        self._conn.execute(
+            """INSERT INTO chat_messages
+               (round_id, turn_number, role, content, game_context, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                round_id,
+                turn_number,
+                role,
+                content,
+                game_context,
+                datetime.now().isoformat(),
             ),
         )
         self._conn.commit()

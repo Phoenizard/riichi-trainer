@@ -76,6 +76,12 @@ async def websocket_endpoint(ws: WebSocket):
                 if session:
                     session.continue_round()
 
+            elif msg_type == "chat_message":
+                if session and session.is_running:
+                    content = data.get("content", "")
+                    if content.strip():
+                        session.handle_chat_message(content)
+
             else:
                 logger.warning(f"Unknown message type: {msg_type}")
 

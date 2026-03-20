@@ -336,6 +336,7 @@ class MortalAgent:
         self._last_analysis: Optional[MortalAnalysis] = None
         self._model_name: str = "baseline"
         self._game_started: bool = False
+        self._bot_dead: bool = False  # Set when bot state becomes corrupt
 
     # --- Factory methods ---
 
@@ -415,14 +416,26 @@ class MortalAgent:
         # Auto-send start_game before first round
         if not self._game_started and event.get("type") == "start_round":
             self._game_started = True
-            self._send_event({"type": "start_game", "names": ["P0", "P1", "P2", "P3"]})
+            try:
+                self._send_event({"type": "start_game", "names": ["P0", "P1", "P2", "P3"]})
+            except Exception as e:
+                logger.warning(f"Mortal start_game error (seat {self.player_id}): {e}")
+                self._bot_dead = True
+                return
+
+        if self._bot_dead:
+            return
 
         # Translate engine event to mjai format and send
         mjai_event = self._engine_event_to_mjai(event)
         if mjai_event:
-            reaction = self._send_event(mjai_event)
-            if reaction and isinstance(reaction, dict):
-                self._last_analysis = parse_mortal_meta(reaction)
+            try:
+                reaction = self._send_event(mjai_event)
+                if reaction and isinstance(reaction, dict):
+                    self._last_analysis = parse_mortal_meta(reaction)
+            except Exception as e:
+                logger.warning(f"Mortal event error (seat {self.player_id}): {e}")
+                self._bot_dead = True
 
     def get_analysis(self) -> Optional[MortalAnalysis]:
         """Get the last analysis result."""

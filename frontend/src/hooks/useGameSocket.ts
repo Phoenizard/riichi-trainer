@@ -1,5 +1,5 @@
 import { useReducer, useCallback, useRef, useEffect } from 'react';
-import type { GameState, ServerMessage, ClientMessage, GameInfo, EfficiencyRow } from '../types/game';
+import type { GameState, ServerMessage, ClientMessage, GameInfo, EfficiencyRow, ChatMessage } from '../types/game';
 
 // Tile sort order: 1m-9m, 1p-9p, 1s-9s, E/S/W/N, P/F/C
 const TILE_ORDER: Record<string, number> = {};
@@ -39,6 +39,9 @@ const initialState: GameState = {
   roundResult: null,
   finalScores: null,
   aiThinking: false,
+  chatMessages: [] as ChatMessage[],
+  chatInput: '',
+  chatLoading: false,
 };
 
 type GameAction =
@@ -50,7 +53,12 @@ type GameAction =
   | { type: 'GAME_OVER'; payload: { scores: number[] } }
   | { type: 'AI_THINKING'; payload: { active: boolean } }
   | { type: 'DISMISS_RESULT' }
-  | { type: 'RESET' };
+  | { type: 'RESET' }
+  | { type: 'CHAT_SEND'; payload: string }
+  | { type: 'CHAT_CHUNK'; payload: string }
+  | { type: 'CHAT_DONE' }
+  | { type: 'CHAT_CLEAR' }
+  | { type: 'CHAT_INPUT'; payload: string };
 
 function gameReducer(state: GameState, action: GameAction): GameState {
   switch (action.type) {
@@ -209,6 +217,44 @@ function gameReducer(state: GameState, action: GameAction): GameState {
       return { ...state, phase: 'playing', roundResult: null };
     case 'RESET':
       return initialState;
+    case 'CHAT_SEND': {
+      const turnNum = state.gameInfo?.turn_number;
+      const userMsg: ChatMessage = {
+        role: 'user',
+        content: action.payload,
+        timestamp: Date.now(),
+        turnNumber: turnNum,
+      };
+      return {
+        ...state,
+        chatMessages: [...state.chatMessages, userMsg],
+        chatInput: '',
+        chatLoading: true,
+      };
+    }
+    case 'CHAT_CHUNK': {
+      const msgs = [...state.chatMessages];
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === 'assistant') {
+        msgs[msgs.length - 1] = { ...last, content: last.content + action.payload };
+      } else {
+        const tn = state.gameInfo?.turn_number;
+        msgs.push({ role: 'assistant', content: action.payload, timestamp: Date.now(), turnNumber: tn });
+      }
+      return { ...state, chatMessages: msgs };
+    }
+    case 'CHAT_DONE':
+      return { ...state, chatLoading: false };
+    case 'CHAT_CLEAR': {
+      const sysMsg: ChatMessage = {
+        role: 'system',
+        content: '新一局开始',
+        timestamp: Date.now(),
+      };
+      return { ...state, chatMessages: [sysMsg], chatLoading: false };
+    }
+    case 'CHAT_INPUT':
+      return { ...state, chatInput: action.payload };
     default:
       return state;
   }
@@ -262,6 +308,17 @@ export function useGameSocket() {
         case 'ai_thinking':
           dispatch({ type: 'AI_THINKING', payload: { active: msg.active } });
           break;
+        case 'chat_reply_chunk':
+          if (msg.content) {
+            dispatch({ type: 'CHAT_CHUNK', payload: msg.content });
+          }
+          if (msg.done) {
+            dispatch({ type: 'CHAT_DONE' });
+          }
+          break;
+        case 'chat_clear':
+          dispatch({ type: 'CHAT_CLEAR' });
+          break;
         case 'error':
           console.error('Server error:', msg.message);
           break;
@@ -308,5 +365,21 @@ export function useGameSocket() {
     dispatch({ type: 'DISMISS_RESULT' });
   }, [send]);
 
-  return { state, startNewGame, sendAction, continueRound };
+  const sendChatMessage = useCallback(
+    (content: string) => {
+      if (!content.trim()) return;
+      dispatch({ type: 'CHAT_SEND', payload: content });
+      send({ type: 'chat_message', content });
+    },
+    [send]
+  );
+
+  const setChatInput = useCallback(
+    (value: string) => {
+      dispatch({ type: 'CHAT_INPUT', payload: value });
+    },
+    []
+  );
+
+  return { state, startNewGame, sendAction, continueRound, sendChatMessage, setChatInput };
 }

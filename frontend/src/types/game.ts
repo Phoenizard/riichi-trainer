@@ -29,6 +29,7 @@ export interface GameInfo {
   tiles_remaining: number;
   dealer: number;
   current_turn: number;
+  turn_number: number;
   players: PlayerView[];
 }
 
@@ -72,6 +73,13 @@ export interface RoundResultData {
   round_stats?: { total: number; matches: number; agreement_rate: number };
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: number;
+  turnNumber?: number;
+}
+
 export interface GameState {
   phase: 'lobby' | 'playing' | 'round_result' | 'game_over';
   gameInfo: GameInfo | null;
@@ -84,6 +92,9 @@ export interface GameState {
   roundResult: RoundResultData | null;
   finalScores: number[] | null;
   aiThinking: boolean;
+  chatMessages: ChatMessage[];
+  chatInput: string;
+  chatLoading: boolean;
 }
 
 // Server → Client messages
@@ -95,10 +106,13 @@ export type ServerMessage =
   | { type: 'round_result' } & RoundResultData
   | { type: 'game_over'; scores: number[] }
   | { type: 'ai_thinking'; active: boolean }
+  | { type: 'chat_reply_chunk'; content: string; done: boolean }
+  | { type: 'chat_clear' }
   | { type: 'error'; message: string };
 
 // Client → Server messages
 export type ClientMessage =
   | { type: 'new_game' }
   | { type: 'action'; action_type: string; tile?: string; meld_tiles?: string[] }
-  | { type: 'continue_round' };
+  | { type: 'continue_round' }
+  | { type: 'chat_message'; content: string };

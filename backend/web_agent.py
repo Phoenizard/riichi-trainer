@@ -51,7 +51,7 @@ class WebAgent:
     ) -> Action:
         """Called by GameEngine in engine thread. Blocks until player responds."""
         # Send current game state so frontend can render the table
-        self.ws_send_queue.put(serialize_game_info(game_state, self._engine_ref))
+        self.ws_send_queue.put(serialize_game_info(game_state, self._engine_ref, self._turn_number))
 
         ps = game_state.players[player_id]
 
@@ -211,6 +211,54 @@ class WebAgent:
             except Exception as e:
                 logger.warning(f"Coach event error: {e}")
 
+    def get_game_context(self) -> dict:
+        """Return current game state as a dict for LLM context building."""
+        engine = self._engine_ref
+        if not engine or not engine._current_state:
+            return {}
+
+        state = engine._current_state
+        ps = state.players[0]  # Human player
+
+        seat_winds = ["E", "S", "W", "N"]
+        wind_offset = (0 - state.dealer) % 4
+
+        ctx: dict = {
+            "round_wind": state.round_wind,
+            "round_number": state.round_number,
+            "honba": state.honba,
+            "turn_number": self._turn_number,
+            "seat_wind": seat_winds[wind_offset],
+            "hand": sort_tiles(ps.hand),
+            "melds": [serialize_meld(m) for m in ps.melds],
+            "draw_tile": ps.draw_tile,
+            "dora_indicators": state.dora_indicators,
+            "scores": list(engine.game_scores) if engine else [],
+        }
+
+        # Shanten from last coach analysis
+        if self._last_coach_analysis:
+            ctx["shanten"] = self._last_coach_analysis.shanten
+            ctx["coach_analysis"] = {
+                "recommended": self._last_coach_analysis.recommended_tile,
+                "candidates": self._last_coach_analysis.candidates[:5],
+            }
+
+        # Opponent info
+        seat_labels = ["自家", "下家", "対面", "上家"]
+        opponents = []
+        for i in range(1, 4):
+            op = state.players[i]
+            opponents.append({
+                "label": seat_labels[i],
+                "discards": op.discards,
+                "melds": [serialize_meld(m) for m in op.melds],
+                "is_riichi": op.is_riichi,
+            })
+        ctx["opponents"] = opponents
+
+        return ctx
+
     def shutdown(self):
         self._shutdown.set()
         self._action_event.set()
@@ -241,7 +289,7 @@ def serialize_actions(actions: list[Action]) -> list[dict]:
     return result
 
 
-def serialize_game_info(state: RoundState, engine: Optional[GameEngine]) -> dict:
+def serialize_game_info(state: RoundState, engine: Optional[GameEngine], turn_number: int = 0) -> dict:
     """Build game_info message from current RoundState."""
     d: dict = {
         "type": "game_info",
@@ -254,6 +302,7 @@ def serialize_game_info(state: RoundState, engine: Optional[GameEngine]) -> dict
         "tiles_remaining": state.tiles_remaining,
         "dealer": state.dealer,
         "current_turn": state.current_turn,
+        "turn_number": turn_number,
         "players": [],
     }
     seat_winds = ["E", "S", "W", "N"]
